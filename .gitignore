@@ -1,0 +1,26 @@
+# Model checkpoints and outputs
+output_intel22/
+*.pth
+*.pth.buggy_*
+
+# Processed data (large binary/compressed)
+data/processed/
+*.pkl.gz
+*.pkl
+
+# Golden data (large SPEFs)
+golden_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Logs and temporaries
+*.log
+*.tmp
+
+# Analysis CSV outputs (can be regenerated)
+analysis/*/
