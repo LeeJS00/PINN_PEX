@@ -24,3 +24,10 @@ venv/
 
 # Analysis CSV outputs (can be regenerated)
 analysis/*/
+
+# Claude Code local settings (contains secrets)
+.claude/settings.local.json
+.claude/
+.codex
+*plan.md
+/tool/

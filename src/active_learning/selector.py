@@ -39,12 +39,13 @@ class PhysicsSelector:
                 cuboids, mask, meta_dict = batch
                 cuboids, mask = cuboids.to(self.device), mask.to(self.device)
                 
-                if cuboids.shape[-1] > 9: cuboids = cuboids[..., :9]
-                
                 # Coupling 연산 활성화하여 확률 분포(P) 획득
-                # preds = self.model(cuboids, mask, compute_coupling=True)
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    preds = self.model(cuboids, mask, compute_coupling=True)
+                    n_tiles = meta_dict.get('n_tiles', None)
+                    endpoint_prox = meta_dict.get('endpoint_prox', None)
+                    if isinstance(n_tiles, torch.Tensor): n_tiles = n_tiles.to(self.device)
+                    if isinstance(endpoint_prox, torch.Tensor): endpoint_prox = endpoint_prox.to(self.device)
+                    preds = self.model(cuboids, mask, compute_coupling=True, n_tiles=n_tiles, endpoint_prox=endpoint_prox)
                 
                 is_target = preds['is_target'] # (B, N)
                 p_gnd = preds['p_gnd']         # (B, N)

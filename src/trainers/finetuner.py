@@ -59,12 +59,24 @@ class NeuralFieldFinetuner(nn.Module):
         self.device = device
 
         effective_lr = max(lr, 1e-5)
-        # 동적 불확실성 가중치(log_var_*)를 폐기하고 순수 모델 파라미터만 최적화
-        self.optimizer = optim.AdamW(
-            filter(lambda p: p.requires_grad, self.model.parameters()), 
-            lr=effective_lr, 
-            weight_decay=1e-4
-        )
+        # v10: CPL parameter group with 3× LR — CPL MLP needs stronger signal
+        # to escape near-zero initialization (layer_scale_phys_cpl=-1.45).
+        try:
+            fr = self.model.flux_router
+        except AttributeError:
+            fr = self.model._orig_mod.flux_router  # torch.compile wraps
+        cpl_param_ids = set(id(p) for p in fr.cpl_mlp.parameters())
+        cpl_param_ids.update(id(p) for p in fr.cpl_edge_proj.parameters())
+        if hasattr(fr, 'layer_scale_phys_cpl'):
+            cpl_param_ids.add(id(fr.layer_scale_phys_cpl))
+        if hasattr(fr, 'cpl_layer_pair_log_scale'):
+            cpl_param_ids.add(id(fr.cpl_layer_pair_log_scale))
+        cpl_params   = [p for p in self.model.parameters() if p.requires_grad and id(p) in cpl_param_ids]
+        other_params = [p for p in self.model.parameters() if p.requires_grad and id(p) not in cpl_param_ids]
+        self.optimizer = optim.AdamW([
+            {'params': other_params, 'lr': effective_lr,       'weight_decay': 1e-4},
+            {'params': cpl_params,   'lr': effective_lr * 3.0, 'weight_decay': 1e-4},
+        ], lr=effective_lr)
         
         self.scaler = torch.amp.GradScaler()
         total_al_steps = max(1, int(getattr(cfg, 'AL_TRAIN_STEPS_PER_ITER', 10000)) * int(getattr(cfg, 'AL_FINE_ITERS', 1)))
@@ -132,7 +144,19 @@ class NeuralFieldFinetuner(nn.Module):
             if zero_mask.any() else torch.tensor(0.0, device=pred_cap.device)
         )
 
-        return log_loss * 1.5 + smape * 0.3 + mape_term * 0.5 + zero_pen * 0.1
+        # Magnitude-weighted MAPE: amplify gradient for large-cap nets.
+        # Corrects scale attenuation (power-law b=0.846) where large caps are under-predicted.
+        if pos_mask.any():
+            tgt_pos = target_cap[pos_mask]
+            median_cap = tgt_pos.median().clamp(min=0.1)
+            cap_weight = torch.clamp(tgt_pos / median_cap, min=0.3, max=20.0)  # [Fix 3] 5→20: CTS nets (30fF) were capped at 5× vs median 0.5fF
+            weighted_mape = (
+                cap_weight * torch.abs(pred_cap[pos_mask] - tgt_pos) / tgt_pos.clamp(min=0.005)
+            ).mean()
+        else:
+            weighted_mape = torch.tensor(0.0, device=pred_cap.device)
+
+        return log_loss * 1.5 + smape * 0.3 + mape_term * 0.3 + weighted_mape * 1.5 + zero_pen * 0.1
     
     def compute_pex_loss(self,pred_cap, target_cap):
         """
@@ -178,8 +202,7 @@ class NeuralFieldFinetuner(nn.Module):
                 # 평가 단계에서는 메타데이터(meta_dict)가 반드시 필요합니다 (Power Net 판별용)
                 cuboids, mask, labels_dict, meta_dict = batch 
                 cuboids, mask = cuboids.to(self.device), mask.to(self.device)
-                if cuboids.shape[-1] > 9: cuboids = cuboids[..., :9]
-                
+
                 A_tgt = labels_dict['A_tgt'].to(self.device)
                 Y_total = labels_dict['Y_total'].to(self.device)
                 Y_gnd = labels_dict['Y_gnd'].to(self.device)
@@ -191,16 +214,20 @@ class NeuralFieldFinetuner(nn.Module):
                 num_nets = labels_dict['num_unique_nets']
                 frw_matrix = labels_dict.get('frw_ratio_matrix', None)
                 if frw_matrix is not None: frw_matrix = frw_matrix.to(self.device)
+                n_tiles = meta_dict.get('n_tiles', None)
+                endpoint_prox = meta_dict.get('endpoint_prox', None)
+                if isinstance(n_tiles, torch.Tensor): n_tiles = n_tiles.to(self.device)
+                if isinstance(endpoint_prox, torch.Tensor): endpoint_prox = endpoint_prox.to(self.device)
 
-                preds = self.model(cuboids, mask, compute_coupling=True, frw_ratio_matrix=frw_matrix)
-                
+                preds = self.model(cuboids, mask, compute_coupling=True, frw_ratio_matrix=frw_matrix, n_tiles=n_tiles, endpoint_prox=endpoint_prox)
+
                 # 1. 텐서에서 물리적 절대 정전용량(Physical Farad) 복원
                 c_total_phys_fp32 = preds['c_total_phys'].float()
                 c_gnd_seg_fp32 = preds['c_gnd_seg'].float()
-                
+
                 global_pred_total = torch.zeros(num_nets, dtype=torch.float32, device=self.device).scatter_add_(0, batch_net_ids, torch.sum(c_total_phys_fp32 * A_tgt * core_ratios, dim=1))
                 global_pred_gnd = torch.zeros(num_nets, dtype=torch.float32, device=self.device).scatter_add_(0, batch_net_ids, torch.sum(c_gnd_seg_fp32 * A_tgt * core_ratios, dim=1))
-                
+
                 # 2. [StarRC 미러링] 파워 넷으로 가는 CPL 플럭스를 GND로 강제 Lumping
                 sparse_cpl = preds['sparse_cpl']
                 b_idx, src_idx, dst_idx = sparse_cpl['b_idx'], sparse_cpl['src_idx'], sparse_cpl['dst_idx']
@@ -271,7 +298,6 @@ class NeuralFieldFinetuner(nn.Module):
                 if batch is None: continue
                 cuboids, mask, labels_dict, meta_dict = batch
                 cuboids, mask = cuboids.to(self.device), mask.to(self.device)
-                if cuboids.shape[-1] > 9: cuboids = cuboids[..., :9]
 
                 A_tgt = labels_dict['A_tgt'].to(self.device)
                 Y_total = labels_dict['Y_total'].to(self.device)
@@ -280,8 +306,12 @@ class NeuralFieldFinetuner(nn.Module):
                 num_nets = labels_dict['num_unique_nets']
                 frw_matrix = labels_dict.get('frw_ratio_matrix', None)
                 if frw_matrix is not None: frw_matrix = frw_matrix.to(self.device)
+                n_tiles = meta_dict.get('n_tiles', None)
+                endpoint_prox = meta_dict.get('endpoint_prox', None)
+                if isinstance(n_tiles, torch.Tensor): n_tiles = n_tiles.to(self.device)
+                if isinstance(endpoint_prox, torch.Tensor): endpoint_prox = endpoint_prox.to(self.device)
 
-                preds = self.model(cuboids, mask, compute_coupling=True, frw_ratio_matrix=frw_matrix)
+                preds = self.model(cuboids, mask, compute_coupling=True, frw_ratio_matrix=frw_matrix, n_tiles=n_tiles, endpoint_prox=endpoint_prox)
                 c_total_phys_fp32 = preds['c_total_phys'].float()
 
                 pred_total = torch.zeros(num_nets, dtype=torch.float32, device=self.device).scatter_add_(
@@ -303,7 +333,7 @@ class NeuralFieldFinetuner(nn.Module):
         mape = (all_err / (all_tgt + 1e-6)).mean().item() * 100.0
         return mape
 
-    def train_steps(self, dataloader, val_loader=None, max_steps=500, save_dir=None, report_every=1000):
+    def train_steps(self, dataloader, val_loader=None, max_steps=500, save_dir=None, report_every=1000, al_iter: int = 0):
         self.model.train()
         step = 0
         REPORT_PER_STEP = report_every
@@ -338,8 +368,7 @@ class NeuralFieldFinetuner(nn.Module):
                 cuboids, mask, labels_dict, meta_dict = batch
                 cuboids = cuboids.to(self.device, non_blocking=True)
                 mask = mask.to(self.device, non_blocking=True)
-                if cuboids.shape[-1] > 9: cuboids = cuboids[..., :9]
-                
+
                 A_tgt = labels_dict['A_tgt'].to(self.device, non_blocking=True)
                 Y_total = labels_dict['Y_total'].to(self.device, non_blocking=True)
                 Y_gnd = labels_dict['Y_gnd'].to(self.device, non_blocking=True)
@@ -351,13 +380,17 @@ class NeuralFieldFinetuner(nn.Module):
                 num_nets = labels_dict['num_unique_nets']
                 frw_matrix = labels_dict.get('frw_ratio_matrix', None)
                 if frw_matrix is not None: frw_matrix = frw_matrix.to(self.device)
+                n_tiles = meta_dict.get('n_tiles', None)
+                endpoint_prox = meta_dict.get('endpoint_prox', None)
+                if isinstance(n_tiles, torch.Tensor): n_tiles = n_tiles.to(self.device)
+                if isinstance(endpoint_prox, torch.Tensor): endpoint_prox = endpoint_prox.to(self.device)
                 profiler.stop("H2D_Transfer")
-                
+
                 self.optimizer.zero_grad(set_to_none=True)
-                
+
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     profiler.start("Model_Forward")
-                    preds = self.model(cuboids, mask, compute_coupling=True, frw_ratio_matrix=frw_matrix)
+                    preds = self.model(cuboids, mask, compute_coupling=True, frw_ratio_matrix=frw_matrix, n_tiles=n_tiles, endpoint_prox=endpoint_prox)
                     profiler.stop("Model_Forward")
                     
                     profiler.start("Loss_Assembly")
@@ -449,9 +482,7 @@ class NeuralFieldFinetuner(nn.Module):
                     # 4. FINAL COMPOSITE LOSS
                     loss_distribution = loss_dist_gnd + loss_dist_cpl
 
-                    # Direct ground cap loss: magnitude supervision on c_gnd.
-                    # Curriculum warm-up (step 500→2000) prevents early large gradients
-                    # from disrupting coupling convergence that was already working.
+                    # Direct GND magnitude loss with curriculum warm-up.
                     GND_WARMUP_START, GND_WARMUP_END, GND_WEIGHT_MAX = 500, 2000, 2.0
                     if step < GND_WARMUP_START:
                         w_gnd = 0.0
@@ -461,7 +492,35 @@ class NeuralFieldFinetuner(nn.Module):
                         w_gnd = GND_WEIGHT_MAX
                     loss_gnd_direct = self.compute_netlevel_loss(global_pred_gnd, Y_gnd[net_indices])
 
-                    loss = loss_scale * 3.0 + loss_cpl_total * 1.0 + loss_distribution * 0.3 + loss_gnd_direct * w_gnd
+                    # Direct CPL magnitude loss: log-space loss_cpl_total masks large
+                    # relative CPL errors (SMAPE 387% → loss_cpl=0.47). This term
+                    # supervises net-level total CPL in linear space to break the
+                    # near-zero local minimum the cpl_mlp converges to.
+                    # v10-A: CPL warmup only on al_iter==0 (cold start). Iterations 1+
+                    # skip warmup entirely — step counter resets to 0 each call, so
+                    # re-applying the warmup killed CPL learning across all v9 iters.
+                    CPL_WARMUP_START, CPL_WARMUP_END, CPL_WEIGHT_MAX = 1000, 3000, 1.5
+                    if al_iter == 0:
+                        if step < CPL_WARMUP_START:
+                            w_cpl_direct = 0.0
+                        elif step < CPL_WARMUP_END:
+                            w_cpl_direct = CPL_WEIGHT_MAX * (step - CPL_WARMUP_START) / (CPL_WARMUP_END - CPL_WARMUP_START)
+                        else:
+                            w_cpl_direct = CPL_WEIGHT_MAX
+                    else:
+                        w_cpl_direct = CPL_WEIGHT_MAX
+                    if valid_cpl_nets.any():
+                        loss_cpl_direct = self.compute_netlevel_loss(
+                            pred_cpl_sum[valid_cpl_nets], gt_cpl_sum[valid_cpl_nets]
+                        )
+                    else:
+                        loss_cpl_direct = torch.tensor(0.0, device=self.device)
+
+                    loss = (loss_scale * 3.0
+                          + loss_cpl_total * 1.0
+                          + loss_distribution * 0.10
+                          + loss_gnd_direct * w_gnd
+                          + loss_cpl_direct * w_cpl_direct)
                     profiler.stop("Loss_Assembly")
 
                 if torch.isnan(loss):
@@ -479,7 +538,7 @@ class NeuralFieldFinetuner(nn.Module):
                 
                 if step % REPORT_PER_STEP == 0:
                     profiler.save_and_reset("FineTuning", f"Step_{step}")
-                    print(f">>> [FineTuner] Step {step:04d}: Train Loss = {loss.item():.4f} loss_scale: {loss_scale.item():.4f} loss_cpl_total: {loss_cpl_total.item():.4f} loss_distribution: {loss_distribution.item():.4f} loss_gnd: {loss_gnd_direct.item():.4f} (w={w_gnd:.2f})")
+                    print(f">>> [FineTuner] Step {step:04d}: Train Loss = {loss.item():.4f} loss_scale: {loss_scale.item():.4f} loss_cpl_total: {loss_cpl_total.item():.4f} loss_distribution: {loss_distribution.item():.4f} loss_gnd: {loss_gnd_direct.item():.4f} (w={w_gnd:.2f}) loss_cpl_direct: {loss_cpl_direct.item():.4f} (w={w_cpl_direct:.2f})")
                     if val_loader is not None:
                         val_score, s_tot, s_gnd, s_cpl = self.evaluate(val_loader)
                         net_mape = self.compute_net_mape(val_loader)
@@ -492,7 +551,10 @@ class NeuralFieldFinetuner(nn.Module):
                         if np.isfinite(net_mape) and net_mape < self.best_val_score and save_dir is not None:
                             self.best_val_score = net_mape
                             torch.save(self.model.state_dict(), Path(save_dir) / "best_model.pth")
-                    
+
+                    if save_dir is not None:
+                        torch.save(self.model.state_dict(), Path(save_dir) / "checkpoint_latest.pth")
+
                     probe_flux_router_anomalies(preds, step)
                 profiler.start("Data_Load")
                 if step >= max_steps: break

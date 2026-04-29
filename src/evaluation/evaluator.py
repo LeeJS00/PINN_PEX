@@ -52,8 +52,6 @@ def _run_inference_and_accumulate(model, loader, DEVICE):
                 continue
             cuboids, mask, meta_dict = batch
             cuboids, mask = cuboids.to(DEVICE), mask.to(DEVICE)
-            if cuboids.shape[-1] > 9:
-                cuboids = cuboids[..., :9]
 
             t_gpu = time.time()
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
@@ -354,7 +352,42 @@ def evaluate_model(args, spef_write=False):
         return
 
     clean_state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
-    model.load_state_dict(clean_state_dict, strict=False)
+
+    # Auto-pad gnd_mlp if checkpoint was trained without wide_density (Z_dim+3 vs Z_dim+4).
+    # Zero-padding the extra column makes the new input dimension a no-op, preserving all
+    # trained GND weights while running correctly through the current forward pass.
+    gnd_ln_w = 'flux_router.gnd_mlp.0.weight'
+    gnd_fc_w = 'flux_router.gnd_mlp.1.weight'
+    current_state = model.state_dict()
+    for fc_key, ln_key in [(gnd_fc_w, gnd_ln_w)]:
+        if fc_key in clean_state_dict and fc_key in current_state:
+            ckpt_in  = clean_state_dict[fc_key].shape[1]
+            model_in = current_state[fc_key].shape[1]
+            if ckpt_in < model_in:
+                pad = model_in - ckpt_in
+                print(f">>> Auto-padding gnd_mlp: {ckpt_in} → {model_in} dims (zeroing {pad} extra col(s))")
+                # Linear weight: [64, ckpt_in] → [64, model_in] (zero-pad new cols)
+                new_fc = torch.zeros_like(current_state[fc_key])
+                new_fc[:, :ckpt_in] = clean_state_dict[fc_key]
+                clean_state_dict[fc_key] = new_fc
+                # LayerNorm weight/bias: [ckpt_in] → [model_in]
+                for ln_k, fill in [(ln_key, 1.0),
+                                   (ln_key.replace('.weight', '.bias'), 0.0)]:
+                    if ln_k in clean_state_dict and ln_k in current_state:
+                        new_ln = torch.full_like(current_state[ln_k], fill)
+                        new_ln[:ckpt_in] = clean_state_dict[ln_k]
+                        clean_state_dict[ln_k] = new_ln
+
+    filtered_state = {}
+    for k, v in clean_state_dict.items():
+        if k in current_state and v.shape == current_state[k].shape:
+            filtered_state[k] = v
+        else:
+            print(f"⚠️ Skipping weight '{k}' due to shape mismatch or missing key.")
+    kept = len(filtered_state)
+    skipped = len(clean_state_dict) - kept
+    model.load_state_dict(filtered_state, strict=False)
+    print(f">>> Loaded checkpoint: {kept} tensors kept, {skipped} shape-filtered")
     model.eval()
 
     manifest_path = DATA_DIR / "dataset_manifest.csv"
@@ -400,10 +433,13 @@ def evaluate_model(args, spef_write=False):
                     eval_profiler.start("GPU_Inference")
                     cuboids, mask, meta_dict = batch
                     cuboids, mask = cuboids.to(DEVICE), mask.to(DEVICE)
-                    if cuboids.shape[-1] > 9: cuboids = cuboids[..., :9]
 
                     with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                        preds = model(cuboids, mask, compute_coupling=True)
+                        n_tiles = meta_dict.get('n_tiles', None)
+                        endpoint_prox = meta_dict.get('endpoint_prox', None)
+                        if isinstance(n_tiles, torch.Tensor): n_tiles = n_tiles.to(DEVICE)
+                        if isinstance(endpoint_prox, torch.Tensor): endpoint_prox = endpoint_prox.to(DEVICE)
+                        preds = model(cuboids, mask, compute_coupling=True, n_tiles=n_tiles, endpoint_prox=endpoint_prox)
                     eval_profiler.stop("GPU_Inference")
 
                     eval_profiler.start("Tensor_to_Node_Mapping")

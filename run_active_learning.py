@@ -354,8 +354,21 @@ def main(args):
         train_loader = train_buffer.get_dataloader()
         trained_nets = len(train_buffer.all_data['net_name'].unique())
         print(f">>> [FineTuner] Training for {TRAIN_STEPS_PER_ITER} steps on {len(train_buffer.all_data)} tiles ({trained_nets} Core Nets)...")
-        
-        loss = finetuner.train_steps(train_loader, val_loader=val_loader, max_steps=TRAIN_STEPS_PER_ITER, save_dir=MODEL_DIR)
+
+        try:
+            loss = finetuner.train_steps(train_loader, val_loader=val_loader, max_steps=TRAIN_STEPS_PER_ITER, save_dir=MODEL_DIR, al_iter=iteration)
+        except BaseException as e:
+            import traceback
+            crash_path = MODEL_DIR / f"crash_iter{iteration+1}_{datetime.now().strftime('%H%M%S')}.txt"
+            with open(crash_path, 'w') as f:
+                f.write(traceback.format_exc())
+                try:
+                    f.write(torch.cuda.memory_summary())
+                except Exception:
+                    pass
+            torch.save(model.state_dict(), MODEL_DIR / f"emergency_iter{iteration+1}.pth")
+            print(f"[CRASH] Iteration {iteration+1} training failed. Crash log: {crash_path}")
+            raise
         al_profiler.stop("Model_Finetuning")
         
         # 로깅 및 모델 저장

@@ -214,10 +214,17 @@ _pt_out_path = None
 _def_name = None
 _name_registry = None
 _spatial_grid = None
+# v9: dedicated VSS/VDD power rail geometry and spatial grid
+_vss_geo = None          # (M, 7): x,y,z,w,h,d,net_type  (net_type: 1.0=VSS, 0.67=VDD)
+_vss_spatial_grid = None
+
+MAX_VSS_PER_TILE = 128   # cap VSS cuboids per tile to avoid OOM from chip-wide stripes
 
 
-def init_worker(global_geo, net_data, pin_data, tiler, tensorizer, out_path, pt_out_path, def_name, name_registry, spatial_grid):
-    global _global_geo, _net_data, _pin_data, _tiler, _tensorizer, _out_path, _pt_out_path, _def_name, _name_registry, _spatial_grid
+def init_worker(global_geo, net_data, pin_data, tiler, tensorizer, out_path, pt_out_path,
+                def_name, name_registry, spatial_grid, vss_geo=None, vss_spatial_grid=None):
+    global _global_geo, _net_data, _pin_data, _tiler, _tensorizer, _out_path, _pt_out_path, \
+           _def_name, _name_registry, _spatial_grid, _vss_geo, _vss_spatial_grid
     _global_geo = global_geo
     _net_data = net_data
     _pin_data = pin_data
@@ -228,6 +235,8 @@ def init_worker(global_geo, net_data, pin_data, tiler, tensorizer, out_path, pt_
     _def_name = def_name
     _name_registry = name_registry
     _spatial_grid = spatial_grid
+    _vss_geo = vss_geo
+    _vss_spatial_grid = vss_spatial_grid
 
 def process_window_job(job_data):
     """
@@ -316,11 +325,56 @@ def process_window_job(job_data):
     # 클리핑된 크기와 중심으로 큐보이드 좌표 정밀 업데이트
     clipped_geo[:, 3:6] = dims[valid_mask]
     clipped_geo[:, :3] = inter_min[valid_mask] + dims[valid_mask] / 2.0
-    
-    # Tensorizer에는 6차원(x,y,z,w,h,d)만 전달
-    final_tensor = _tensorizer.process(clipped_geo[:, :6], clipped_types, center).astype(np.float32)
-    abs_geometries = clipped_geo[:, :6].copy().astype(np.float32)
-    
+
+    # v9: append VSS/VDD cuboids from dedicated power rail grid
+    sig_geo = clipped_geo[:, :6]
+    sig_types = clipped_types
+    sig_net_types = np.zeros(len(sig_types), dtype=np.float32)  # 0.0 = signal
+
+    vss_geo_appended = None
+    vss_types_appended = None
+    vss_net_types_appended = None
+
+    if _vss_spatial_grid is not None and _vss_geo is not None:
+        vss_indices = _vss_spatial_grid.query_window(center, context_size)
+        if vss_indices:
+            vss_raw = _vss_geo[vss_indices]  # (M, 7): x,y,z,w,h,d,net_type
+            # Intersect with context window
+            vss_c_mins = vss_raw[:, :3] - vss_raw[:, 3:6] / 2
+            vss_c_maxs = vss_raw[:, :3] + vss_raw[:, 3:6] / 2
+            vss_inter_min = np.maximum(vss_c_mins, ctx_min)
+            vss_inter_max = np.minimum(vss_c_maxs, ctx_max)
+            vss_dims = vss_inter_max - vss_inter_min
+            vss_valid = np.all(vss_dims > 1e-9, axis=1)
+            if np.any(vss_valid):
+                vss_raw = vss_raw[vss_valid].copy()
+                vss_dims = vss_dims[vss_valid]
+                vss_inter_min = vss_inter_min[vss_valid]
+                vss_raw[:, 3:6] = vss_dims
+                vss_raw[:, :3] = vss_inter_min + vss_dims / 2.0
+                # Limit to MAX_VSS_PER_TILE by proximity to tile center
+                if len(vss_raw) > MAX_VSS_PER_TILE:
+                    dist2 = ((vss_raw[:, 0] - center[0])**2 + (vss_raw[:, 1] - center[1])**2)
+                    idx_sorted = np.argpartition(dist2, MAX_VSS_PER_TILE)[:MAX_VSS_PER_TILE]
+                    vss_raw = vss_raw[idx_sorted]
+                vss_geo_appended = vss_raw[:, :6]
+                vss_types_appended = np.full(len(vss_raw), 5, dtype=np.int32)
+                vss_net_types_appended = vss_raw[:, 6].astype(np.float32)
+
+    if vss_geo_appended is not None:
+        combined_geo = np.vstack([sig_geo, vss_geo_appended])
+        combined_types = np.concatenate([sig_types, vss_types_appended])
+        combined_net_types = np.concatenate([sig_net_types, vss_net_types_appended])
+    else:
+        combined_geo = sig_geo
+        combined_types = sig_types
+        combined_net_types = sig_net_types
+
+    # Tensorizer에는 6차원(x,y,z,w,h,d) + net_types 전달
+    final_tensor = _tensorizer.process(combined_geo, combined_types, center,
+                                        net_types=combined_net_types).astype(np.float32)
+    abs_geometries = combined_geo.astype(np.float32)
+
     cuboid_net_names = []
     for uid in valid_ids:
         if uid == nid:
@@ -330,6 +384,8 @@ def process_window_job(job_data):
         else:
             pid = int(uid)
             cuboid_net_names.append(_pin_data[pid]['net_name'] if pid in _pin_data else "UNKNOWN_PIN")
+    if vss_geo_appended is not None:
+        cuboid_net_names.extend(["VSS_RAIL"] * len(vss_geo_appended))
 
     # 5. Fast I/O Save (무거운 Segment 정보 완전 배제)
     safe_net_name = _name_registry.register(net_name)
@@ -385,29 +441,39 @@ def main():
     def_parser = DefStreamParser(args.def_path, layer_map, tech_lef, cell_lib)
     
     all_cuboids_list =[]
+    vss_cuboids_list = []   # v9: separate list for VSS/VDD power rail cuboids
     net_data = {}
     _pin_data, pin_data = {}, {}
     net_id_counter = 0
     pin_id_counter = 1
     name_registry = NameRegistry()
-    
+
+    POWER_NAMES = {'vss', 'vdd', 'vcc', 'gnd', 'vssx', 'vccx', 'vddx'}
+
     for net_name, cuboids, segments in tqdm(def_parser.parse(), desc="Parsing Geometry"):
         if not cuboids.size > 0: continue
         is_pin = 'PIN' in net_name.upper() or 'INST_PORT' in net_name.upper()
-        
+
         if is_pin:
             pid = int(-pin_id_counter)
             pin_id_counter += 1
             _pin_data[pid] = {'name': net_name, 'segments': segments, 'net_name': None, 'cuboids': cuboids}
             ids = np.full((len(cuboids), 1), pid, dtype=np.float32)
+            all_cuboids_list.append(np.hstack([cuboids, ids]))
+        elif net_name.lower() in POWER_NAMES:
+            # v9: collect VSS/VDD as aggressors in a separate spatial grid.
+            # net_type: 1.0=VSS/GND, 0.67=VDD/VCC
+            is_vss = net_name.lower() in {'vss', 'gnd', 'vssx'}
+            net_type_val = 1.0 if is_vss else 0.67
+            net_type_col = np.full((len(cuboids), 1), net_type_val, dtype=np.float32)
+            vss_cuboids_list.append(np.hstack([cuboids, net_type_col]))
         else:
             nid = net_id_counter
             net_id_counter += 1
             # [최적화] 나중에 검색하지 않도록 파싱 시점에 cuboids 텐서를 통째로 메모리에 쥠
             net_data[nid] = {'name': net_name, 'segments': segments, 'cuboids': cuboids}
             ids = np.full((len(cuboids), 1), nid, dtype=np.float32)
-            
-        all_cuboids_list.append(np.hstack([cuboids, ids]))
+            all_cuboids_list.append(np.hstack([cuboids, ids]))
 
     if not all_cuboids_list: return
     
@@ -438,7 +504,17 @@ def main():
         pickle.dump(def_parser.inst_net_map, f)
         
     global_geometry = np.vstack(all_cuboids_list)
-    print(f"    Total Cuboids: {len(global_geometry)}")
+    print(f"    Total Signal Cuboids: {len(global_geometry)}")
+
+    # v9: build VSS/VDD geometry and dedicated spatial grid
+    vss_geometry = None
+    vss_spatial_grid = None
+    use_vss = getattr(cfg, 'USE_VSS_AGGRESSORS', False)
+    if use_vss and vss_cuboids_list:
+        vss_geometry = np.vstack(vss_cuboids_list)  # (M, 7): x,y,z,w,h,d,net_type
+        print(f"    Total VSS/VDD Cuboids: {len(vss_geometry)}")
+        vss_spatial_grid = SpatialGrid(bin_size_x=cfg.WINDOW_SIZE[0], bin_size_y=cfg.WINDOW_SIZE[1])
+        vss_spatial_grid.build_from_cuboids(vss_geometry)
 
     # 2. O(N) Spatial Hashing
     print(">>>[2/4] Building Spatial Grid Hash Map...")
@@ -551,8 +627,9 @@ def main():
         
         # 4-2. 메인 타일 생성 (전역 변수 초기화 필수)
         if jobs:
-            init_args = (global_geometry, net_data, pin_data, tiler, tensorizer, out_path, pt_out_path, def_path.name, name_registry, spatial_grid)
-            
+            init_args = (global_geometry, net_data, pin_data, tiler, tensorizer, out_path, pt_out_path,
+                         def_path.name, name_registry, spatial_grid, vss_geometry, vss_spatial_grid)
+
             # Pool 생성 시점에 init_worker를 묶어서, 어떤 워커가 스폰되든 무조건 전역 변수가 세팅되게 강제함
             with mp.Pool(processes=args.num_workers, initializer=init_worker, initargs=init_args) as pool_tiles:
                 for result in tqdm(pool_tiles.imap_unordered(process_window_job, jobs, chunksize=50), 

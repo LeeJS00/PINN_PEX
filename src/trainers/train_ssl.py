@@ -93,7 +93,6 @@ def train_ssl():
                 
             cuboids = cuboids.to(DEVICE, non_blocking=True)
             mask = mask.to(DEVICE, non_blocking=True)
-            if cuboids.shape[-1] > 9: cuboids = cuboids[..., :9]
             
             # 샘플링
             coords, types, eps_env = sampler.sample_for_ssl(cuboids, mask, num_samples=512)

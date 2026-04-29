@@ -4,10 +4,10 @@ from pathlib import Path
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
-RAW_DIR = DATA_DIR / "raw" / "def" / "intel22"
+RAW_DIR = Path("/home/jslee/projects/PEX_SSL/data/raw/def/intel22")
 PDK_DIR = PROJECT_ROOT / "tool" / "pdk" / "22nm"
 SPEF_DIR = Path("/home/jslee/projects/PEX_SSL/golden_data/spef_data/intel22")
-PROCESSED_DIR = Path("/data/PEX_SSL/data/processed/intel22")
+PROCESSED_DIR = Path("/data/PINNPEX/data/processed/intel22")   # v9: fresh 10-channel build
 PT_DIR = PROCESSED_DIR.parent / "intel22_pt"
 OUTPUT_DIR = PROJECT_ROOT / "output_intel22"
 ORACLE_PATH = Path("/home/jslee/projects/PEX_SSL/data/STARRC_LOG/master_starrc_history.db")
@@ -69,7 +69,7 @@ AL_BUDGET_RATIO = 0.05
 # Parallel Processing
 NUM_JOBS = 8
 
-RUN_NAME = "ssl_basis_v13_bem"
+RUN_NAME = "ssl_basis_v9"
 
 # StarRC Configuration
 # PEX_BIN = 'quantus' # or "StarXtract"
@@ -99,22 +99,36 @@ SSL_RESUME_CHECKPOINT = None # Path to checkpoint to resume from (e.g. "/path/to
 
 # AL
 AL_BATCH_SIZE = 4
-AL_LR = 1e-4
-AL_MAX_BUDGET_RATIO = 0.5
+AL_LR = 5e-5  # v10: CPL LR = 1.5e-4 (3×), other = 5e-5; total signal more stable
+AL_MAX_BUDGET_RATIO = 0.7
 # AL_MIN_ENTROPY_THRESHOLD = 0.0015
 AL_MIN_ENTROPY_THRESHOLD = -float('inf')
-AL_TRAIN_STEPS_PER_ITER = 5000
-AL_FINE_ITERS = 5
+AL_TRAIN_STEPS_PER_ITER = 12000  # v10: +50% steps; CPL gets 9000 supervised steps per iter
+AL_FINE_ITERS = 6
 AL_BATCH_NETS = 2          # multi-net batches: reduces gradient variance (Codex rec.)
 AL_MAX_TILES_PER_BATCH = 256  # 2 nets × 128 tiles max each
 AL_NUM_WORKERS = 32
-NF_PAD_TO_CUBOIDS = 768  # 768 - N² 메모리 44% 감소 (~186s runtime), 1024 - 650MiB
+NF_PAD_TO_CUBOIDS = 1024  # v9: expanded for VSS cuboids (v8: 768)
 AL_SAMPLING_METHOD = "Predefined"
+# v10: 6 designs — ibex_core added for RISC-V / CTS structure diversity.
 AL_PREDEFINED_DESIGNS = [
     'intel22_gcd_f3',
     'intel22_spi_top_f3',
     'intel22_aes_cipher_top_f3',
+    'intel22_vga_enh_top_f3',
+    'intel22_wb_conmax_top_f3',
+    'intel22_ibex_core_f3',
 ]
+# v8b: enable explicit VSS rail coupling term in GND formula (Fix 5).
+# Set True for v8b run; False for v8.
+USE_RAIL_COUPLING = False
+# v9: include VSS/VDD cuboids as aggressors in tile context windows.
+# Requires dataset rebuild (10-channel tensors).
+USE_VSS_AGGRESSORS = True
+# Model input channels: 9 (v8) → 10 (v9, adds net_type channel).
+INPUT_DIM = 10
+# v9: CPL search radius 2.5 → 4.0 μm; matches context_radius, captures M7/M8 inter-wire coupling.
+CUTOFF_RADIUS = 4.0
 # AL_SAMPLING_METHOD = "SSL"
 GNN_TRAIN_STEPS_PER_ITER = 10000
 
