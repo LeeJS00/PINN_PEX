@@ -1,0 +1,105 @@
+[
+  {
+    "label": "\u00d7 \u03b1 (single scale)",
+    "train_mape": 8.146480052206273,
+    "test_mape": 6.967098116984821,
+    "names": [
+      "R_physics_only"
+    ],
+    "coef": [
+      1.4651275253913865
+    ]
+  },
+  {
+    "label": "\u00d7 \u03b1 + intercept",
+    "train_mape": 8.140633001332864,
+    "test_mape": 6.97593423978633,
+    "names": [
+      "R_physics_only",
+      "one"
+    ],
+    "coef": [
+      1.4539890795556125,
+      0.8614886371722126
+    ]
+  },
+  {
+    "label": "\u00d7 \u03b1 + intercept + n_pins",
+    "train_mape": 8.140633001332864,
+    "test_mape": 6.97593423978633,
+    "names": [
+      "R_physics_only",
+      "one",
+      "n_pins"
+    ],
+    "coef": [
+      1.4539890795556125,
+      0.8614886371722126,
+      0.0
+    ]
+  },
+  {
+    "label": "\u00d7 \u03b1 + intercept + n_pin_split",
+    "train_mape": 7.945026747599653,
+    "test_mape": 6.939881841792891,
+    "names": [
+      "R_physics_only",
+      "one",
+      "n_pin_PIN",
+      "n_pin_inst"
+    ],
+    "coef": [
+      1.4457413522757436,
+      1.3423413295602582,
+      124.09253620405374,
+      0.0
+    ]
+  },
+  {
+    "label": "\u00d7 \u03b1 + n_segments",
+    "train_mape": 8.146480052206273,
+    "test_mape": 6.967098116984821,
+    "names": [
+      "R_physics_only",
+      "n_segments"
+    ],
+    "coef": [
+      1.4651275253913865,
+      0.0
+    ]
+  },
+  {
+    "label": "\u00d7 \u03b1 + sqrt(R_physics)",
+    "train_mape": 8.146480052206273,
+    "test_mape": 6.967098116984821,
+    "names": [
+      "R_physics_only",
+      "sqrt_Rphys"
+    ],
+    "coef": [
+      1.4651275253913865,
+      0.0
+    ]
+  },
+  {
+    "label": "\u00d7 \u03b1 + n_pin_split + n_segments + sqrt(R)",
+    "train_mape": 7.944008240142858,
+    "test_mape": 6.93783991030597,
+    "names": [
+      "R_physics_only",
+      "one",
+      "n_pin_PIN",
+      "n_pin_inst",
+      "n_segments",
+      "sqrt_Rphys"
+    ],
+    "coef": [
+      1.4394879227424204,
+      1.3981907926491173,
+      125.0141692408066,
+      0.0,
+      0.07816629862671975,
+      0.0
+    ]
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "n_nets": 3380,
+  "n_matched": 3169,
+  "n_unmatched": 211,
+  "tot_mape_mean": 6.955981188916035,
+  "tot_mape_median": 5.373051616882616,
+  "tot_mape_p95": 18.044284679277197,
+  "gnd_mape_matched_mean": 26.810154210211905,
+  "gnd_mape_matched_median": 19.712224363299303,
+  "gnd_mape_unmatched_mean": 21.49655505850101,
+  "cpl_mape_matched_mean": 18.620782530162963,
+  "cpl_mape_matched_median": 13.995102877585117,
+  "cpl_mape_unmatched_mean": 27.294987792373668,
+  "r_squared_c": 0.9932844647626156,
+  "seed": 3
+}

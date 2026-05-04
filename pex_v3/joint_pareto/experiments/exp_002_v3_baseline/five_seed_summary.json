@@ -1,0 +1,10 @@
+{
+  "n_seeds": 5,
+  "wall_clock_s": 68.9,
+  "mean_of_mean_mape": 7.035,
+  "mean_of_median_mape": 5.441,
+  "mean_of_p95_mape": 18.544,
+  "gnd_matched_mean": 27.37,
+  "cpl_matched_mean": 18.78,
+  "r_squared_c": 0.993
+}

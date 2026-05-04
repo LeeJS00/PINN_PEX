@@ -1,0 +1,41 @@
+{
+  "run_id": "83436f7d-80ca-46d0-89d1-c8af0eea005f",
+  "timestamp": "2026-05-03T13:44:49.665600+00:00",
+  "hostname": "gpu-8",
+  "user": "jslee",
+  "git": {
+    "sha": "f0496eeb174fb00222eceb9e9ca957c6f9858559",
+    "dirty": true
+  },
+  "manifest_path": "/data/PINNPEX/data/processed_v3/intel22/features/all_designs.csv",
+  "manifest_sha256": "2cf188928da20d389338e4bd3c815cb0181586533614475a70c225f44bb53e6c",
+  "config_snapshot": {
+    "schema_version": "v3",
+    "processed_dir_v3": "/data/PINNPEX/data/processed_v3/intel22",
+    "manifest_path_v3": "/data/PINNPEX/data/processed_v3/intel22/dataset_manifest_v3.csv",
+    "valid_ratio_v3": 0.1,
+    "h1_hash_seed": "pinn_pex_v3_2026_05_01",
+    "context_margin_v3": 5.0,
+    "nf_pad_to_cuboids_v3": 1024,
+    "h4_edge_mode": "pairwise",
+    "max_aggr_budget_v3": 768,
+    "run_name_v3": "ssl_basis_v3_clean",
+    "cutoff_radius": 4.0,
+    "input_dim": 10,
+    "use_vss_aggressors": true,
+    "task": "clamp_norm_smoke",
+    "calibration": "per_layer",
+    "n_epochs": 200,
+    "model_params": 44738,
+    "model_class": "src.models.hybrid_v3_mesh_clamp_norm.HybridPexV3MeshClampNorm",
+    "seed": 42,
+    "pythonhashseed": "42"
+  },
+  "seed": 42,
+  "cuda_env": {
+    "torch_version": "2.4.0+cu121",
+    "cuda_version": "12.1",
+    "device_name": "NVIDIA RTX A6000",
+    "device_index": 0
+  }
+}

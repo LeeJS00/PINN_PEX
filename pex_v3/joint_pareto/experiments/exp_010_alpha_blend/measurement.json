@@ -1,0 +1,80 @@
+{
+  "_schema": "joint_pareto.measurement.v1",
+  "variant_id": "v10_alpha_blend",
+  "label": "Path-2 v10 = v7 parallel + \u03b1=0.2 XGB-Mesh blend",
+  "design": "intel22_tv80s_f3",
+  "n_seeds": 5,
+  "alpha": 0.2,
+  "wall_clock_s": 42.59,
+  "wall_clock_s_stdev": 1.35,
+  "wall_clock_per_seed": [
+    44.5,
+    42.7,
+    43.02,
+    40.85,
+    41.9
+  ],
+  "wall_clock_breakdown": {
+    "autonomous_v7_parallel_s": 39.29,
+    "blend_calibrate_s": 1.64,
+    "sister_r_calibrate_s": 1.66,
+    "note": "single-pass blend replaces v9's XGB+Mesh-ratio chain (3.90s \u2192 1.64s); under concurrent nova background"
+  },
+  "mean_of_mean_mape": 6.821060792439343,
+  "stdev_of_mean_mape": 0.0402264399018435,
+  "mean_of_median_mape": 5.457654563554863,
+  "stdev_of_median_mape": 0.0593795612007223,
+  "mean_of_p95_mape": 17.19816504738683,
+  "stdev_of_p95_mape": 0.1410512152397387,
+  "gnd_matched_mean": 22.8285094785359,
+  "gnd_matched_stdev": 0.06844108489819965,
+  "cpl_matched_mean": 17.76696258604292,
+  "cpl_matched_stdev": 0.03163046087755516,
+  "r_squared_c": 0.9939,
+  "r_squared_c_stdev": 0.0002,
+  "r_mape_mean": 2.21,
+  "r_squared_r": 0.9991,
+  "method_summary": "Single-pass per-net calibration: target_total = \u03b1\u00b7mesh_total + (1-\u03b1)\u00b7xgb_total with \u03b1=0.2. Per-channel split via mesh_ratio_gnd = mesh_pred_gnd / mesh_total. Replaces XGB+Mesh-ratio chain (v9). Followed by sister R per-net rescale (unchanged).",
+  "per_seed": [
+    {
+      "seed": 0,
+      "tot_mean": 6.813065649433633,
+      "tot_median": 5.432575618560035,
+      "tot_p95": 17.167206425657866,
+      "gnd_matched": 22.855313468469667,
+      "cpl_matched": 17.796011892340694
+    },
+    {
+      "seed": 1,
+      "tot_mean": 6.85813442447341,
+      "tot_median": 5.4747984267160135,
+      "tot_p95": 17.413506606678645,
+      "gnd_matched": 22.844638717974455,
+      "cpl_matched": 17.73249293210627
+    },
+    {
+      "seed": 2,
+      "tot_mean": 6.84477973222092,
+      "tot_median": 5.506699557137777,
+      "tot_p95": 17.124638390973598,
+      "gnd_matched": 22.866094090739146,
+      "cpl_matched": 17.744384963186473
+    },
+    {
+      "seed": 3,
+      "tot_mean": 6.755432516374862,
+      "tot_median": 5.366635291143943,
+      "tot_p95": 17.244473407455512,
+      "gnd_matched": 22.707306263055802,
+      "cpl_matched": 17.804072529217887
+    },
+    {
+      "seed": 4,
+      "tot_mean": 6.83389163969389,
+      "tot_median": 5.507563924216548,
+      "tot_p95": 17.041000406168518,
+      "gnd_matched": 22.869194852440426,
+      "cpl_matched": 17.757850613363278
+    }
+  ]
+}

@@ -69,7 +69,7 @@ AL_BUDGET_RATIO = 0.05
 # Parallel Processing
 NUM_JOBS = 8
 
-RUN_NAME = "ssl_basis_v9"
+RUN_NAME = "ssl_basis_dspinn_v1"
 
 # StarRC Configuration
 # PEX_BIN = 'quantus' # or "StarXtract"
@@ -129,6 +129,7 @@ USE_VSS_AGGRESSORS = True
 INPUT_DIM = 10
 # v9: CPL search radius 2.5 → 4.0 μm; matches context_radius, captures M7/M8 inter-wire coupling.
 CUTOFF_RADIUS = 4.0
+
 # AL_SAMPLING_METHOD = "SSL"
 GNN_TRAIN_STEPS_PER_ITER = 10000
 

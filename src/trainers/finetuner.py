@@ -14,11 +14,18 @@ import numpy as np
 from src.utils.profiler import RuntimeProfiler
 import configs.config as cfg
 
-def probe_flux_router_anomalies(preds, step, threshold_ratio=5.0):
+def probe_flux_router_anomalies(preds, step, threshold_ratio=5.0, model=None):
     """
     Validation 및 Training 시 CPL 폭발 현상과 GND Cap의 스케일 붕괴를 모니터링합니다.
+
+    Lightweight diagnostic: prints CPL amplification ratio + GND CV. If `model` is None,
+    Z_macro magnitude, proj_out weight norm, and first FNO block spectral
+    weight norm. Lets us tell apart "Z_macro never learned" from "Z_macro
+    learned but downstream heads ignored it" — the two failure modes that
+    look identical from CPL SMAPE alone.
     """
     print(f"\n[Probe Alert - Step {step}]")
+
     if 'sparse_cpl' in preds and len(preds['sparse_cpl']['c_cpl']) > 0:
         cpl_data = preds['sparse_cpl']
         w_cpl = cpl_data['w_cpl']
@@ -59,25 +66,25 @@ class NeuralFieldFinetuner(nn.Module):
         self.device = device
 
         effective_lr = max(lr, 1e-5)
-        # v10: CPL parameter group with 3× LR — CPL MLP needs stronger signal
-        # to escape near-zero initialization (layer_scale_phys_cpl=-1.45).
-        try:
-            fr = self.model.flux_router
-        except AttributeError:
-            fr = self.model._orig_mod.flux_router  # torch.compile wraps
+        # CPL parameter group with 3× LR — CPL MLP needs stronger signal
+        # to escape near-zero initialization than the mature SSL-pretrained
+        # encoder/charge_basis params.
+        raw_model = getattr(self.model, '_orig_mod', self.model)
+        fr = raw_model.flux_router
         cpl_param_ids = set(id(p) for p in fr.cpl_mlp.parameters())
         cpl_param_ids.update(id(p) for p in fr.cpl_edge_proj.parameters())
-        if hasattr(fr, 'layer_scale_phys_cpl'):
-            cpl_param_ids.add(id(fr.layer_scale_phys_cpl))
         if hasattr(fr, 'cpl_layer_pair_log_scale'):
             cpl_param_ids.add(id(fr.cpl_layer_pair_log_scale))
-        cpl_params   = [p for p in self.model.parameters() if p.requires_grad and id(p) in cpl_param_ids]
-        other_params = [p for p in self.model.parameters() if p.requires_grad and id(p) not in cpl_param_ids]
-        self.optimizer = optim.AdamW([
+        cpl_params   = [p for p in self.model.parameters()
+                        if p.requires_grad and id(p) in cpl_param_ids]
+        other_params = [p for p in self.model.parameters()
+                        if p.requires_grad and id(p) not in cpl_param_ids]
+        param_groups = [
             {'params': other_params, 'lr': effective_lr,       'weight_decay': 1e-4},
             {'params': cpl_params,   'lr': effective_lr * 3.0, 'weight_decay': 1e-4},
-        ], lr=effective_lr)
-        
+        ]
+        self.optimizer = optim.AdamW(param_groups, lr=effective_lr)
+
         self.scaler = torch.amp.GradScaler()
         total_al_steps = max(1, int(getattr(cfg, 'AL_TRAIN_STEPS_PER_ITER', 10000)) * int(getattr(cfg, 'AL_FINE_ITERS', 1)))
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=total_al_steps, eta_min=1e-6)
@@ -105,58 +112,60 @@ class NeuralFieldFinetuner(nn.Module):
         log_target = torch.log1p(target / eps)
         return torch.mean((log_pred - log_target) ** 2)
 
-    def compute_netlevel_loss(self, pred_cap, target_cap):
+    def compute_netlevel_loss(self, pred_cap, target_cap, eps=0.005):
         """
-        Net-level total-cap loss: log-space smooth-L1 + SymMAPE + zero penalty.
-        smooth-L1 in log space grows linearly for large errors (max ~7 per sample)
-        vs RMSLE which grows quadratically (max ~49). Safe for single-net batches.
+        Net-level cap loss: direct MAPE + magnitude-weighted MAPE + log
+        regularizer + zero-target penalty.
+
+        Replaces the prior 5-term cocktail (log_loss, SymMAPE, mape_term,
+        weighted_mape, zero_pen) where SymMAPE saturated at ~0.25 once MAPE
+        exceeded 40%, killing gradient on the regime that matters most.
+        Direct MAPE aligns with the validation metric, weighted MAPE keeps
+        large-cap (CTS) nets prominent, log_reg via softplus provides stable
+        gradient when pred briefly goes negative, zero_pen discourages
+        spurious predictions on near-zero targets.
         """
-        pos_mask = (target_cap >= 0.005)
+        pos_mask = (target_cap >= eps)
         zero_mask = ~pos_mask
 
-        # Log-space smooth-L1: linear growth for large errors — max ≈ log1p(1000) ≈ 7
-        log_loss = (
-            F.smooth_l1_loss(
-                torch.log1p(pred_cap[pos_mask]),
-                torch.log1p(target_cap[pos_mask]),
-                beta=0.1
-            ) if pos_mask.any() else torch.tensor(0.0, device=pred_cap.device)
-        )
-
-        # SymMAPE: bounded [0, 2]
-        smape = (
-            (2.0 * torch.abs(pred_cap[pos_mask] - target_cap[pos_mask]) /
-             (torch.abs(pred_cap[pos_mask]) + target_cap[pos_mask].clamp(min=0.005))).mean()
-            if pos_mask.any() else torch.tensor(0.0, device=pred_cap.device)
-        )
-
-        # True MAPE: direct alignment with the evaluation metric.
-        # SymMAPE saturates at ~0.25 when true MAPE is 40%, providing no gradient signal.
-        mape_term = (
-            (torch.abs(pred_cap[pos_mask] - target_cap[pos_mask]) /
-             target_cap[pos_mask].clamp(min=0.005)).mean()
-            if pos_mask.any() else torch.tensor(0.0, device=pred_cap.device)
-        )
-
-        # Zero penalty
-        zero_pen = (
-            torch.log1p(pred_cap[zero_mask]).mean()
-            if zero_mask.any() else torch.tensor(0.0, device=pred_cap.device)
-        )
-
-        # Magnitude-weighted MAPE: amplify gradient for large-cap nets.
-        # Corrects scale attenuation (power-law b=0.846) where large caps are under-predicted.
         if pos_mask.any():
-            tgt_pos = target_cap[pos_mask]
-            median_cap = tgt_pos.median().clamp(min=0.1)
-            cap_weight = torch.clamp(tgt_pos / median_cap, min=0.3, max=20.0)  # [Fix 3] 5→20: CTS nets (30fF) were capped at 5× vs median 0.5fF
-            weighted_mape = (
-                cap_weight * torch.abs(pred_cap[pos_mask] - tgt_pos) / tgt_pos.clamp(min=0.005)
-            ).mean()
-        else:
-            weighted_mape = torch.tensor(0.0, device=pred_cap.device)
+            pred_pos = pred_cap[pos_mask]
+            tgt_pos  = target_cap[pos_mask]
 
-        return log_loss * 1.5 + smape * 0.3 + mape_term * 0.3 + weighted_mape * 1.5 + zero_pen * 0.1
+            # Primary: direct MAPE — aligns with val metric.
+            mape = (torch.abs(pred_pos - tgt_pos) / tgt_pos.clamp(min=eps)).mean()
+
+            # Magnitude-weighted MAPE — emphasize large nets (CTS, long routes).
+            # Power-law b≈0.846 attenuation underweights large caps without this.
+            median_cap = tgt_pos.median().clamp(min=0.1)
+            cap_weight = torch.clamp(tgt_pos / median_cap, min=0.3, max=20.0)
+            weighted_mape = (
+                cap_weight * torch.abs(pred_pos - tgt_pos) / tgt_pos.clamp(min=eps)
+            ).mean()
+
+            # Log-space regularizer — clamp at 0 (model output is normally
+            # non-negative; clamp blocks NaN from log1p during transient
+            # negative pred). Gradient on negative pred is carried by the
+            # MAPE branch above, which uses raw pred.
+            log_reg = F.smooth_l1_loss(
+                torch.log1p(pred_pos.clamp(min=0.0)),
+                torch.log1p(tgt_pos),
+                beta=0.1,
+            )
+        else:
+            mape = torch.tensor(0.0, device=pred_cap.device)
+            weighted_mape = torch.tensor(0.0, device=pred_cap.device)
+            log_reg = torch.tensor(0.0, device=pred_cap.device)
+
+        # Zero-target penalty — discourage non-zero predictions when target ≈ 0.
+        if zero_mask.any():
+            zero_pen = F.smooth_l1_loss(
+                pred_cap[zero_mask], target_cap[zero_mask], beta=0.05
+            )
+        else:
+            zero_pen = torch.tensor(0.0, device=pred_cap.device)
+
+        return mape + 0.5 * weighted_mape + 0.1 * log_reg + 0.1 * zero_pen
     
     def compute_pex_loss(self,pred_cap, target_cap):
         """
@@ -254,38 +263,81 @@ class NeuralFieldFinetuner(nn.Module):
                 global_pred_cpl = torch.zeros(num_nets, MAX_AGGR, dtype=torch.float32, device=self.device).index_add_(0, batch_net_ids, tile_cpl)
 
                 # =================================================================
-                # [SIGN-OFF EVALUATION] 비율이 아닌 순수 물리 단위(Farad)로 SMAPE 검증
+                # [SIGN-OFF EVALUATION]
+                # 1) Custom training loss (compute_pex_loss) — used for ckpt scoring.
+                #    Historically labeled "SMAPE" in logs but it's actually a hybrid
+                #    L1 + 5×MAPE + 2×log loss. Rename to s_tot_loss / s_gnd_loss / s_cpl_loss.
+                # 2) True per-edge SMAPE — what the diagnostic scripts measure.
+                # 3) CPL magnitude calibration: Σ pred_cpl / Σ golden_cpl per net.
                 # =================================================================
                 net_indices = torch.arange(num_nets, dtype=torch.long, device=self.device)
-                
-                # Macro Scale 평가
-                s_tot = self.compute_pex_loss(global_pred_total, Y_total[net_indices])
-                s_gnd = self.compute_pex_loss(global_pred_gnd, Y_gnd[net_indices])
-                
-                # Net-Level Total CPL 평가 (KCL 관점에서의 CPL 덩어리 합산 비교)
+
+                # 1) Custom training loss (legacy "SMAPE" label)
+                s_tot_loss = self.compute_pex_loss(global_pred_total, Y_total[net_indices])
+                s_gnd_loss = self.compute_pex_loss(global_pred_gnd, Y_gnd[net_indices])
                 pred_cpl_sum = torch.sum(global_pred_cpl * valid_aggr_mask.float(), dim=1)
-                gt_cpl_sum = torch.sum(Y_cpl[net_indices] * valid_aggr_mask.float(), dim=1)
-                
-                # 골든 기준 1aF(0.001fF) 이상의 유의미한 CPL을 가진 Net들만 평가 (노이즈 방어)
+                gt_cpl_sum   = torch.sum(Y_cpl[net_indices] * valid_aggr_mask.float(), dim=1)
                 valid_net_cpl_mask = gt_cpl_sum > 0.001
                 if valid_net_cpl_mask.sum() > 0:
-                    s_cpl = self.compute_pex_loss(pred_cpl_sum[valid_net_cpl_mask], gt_cpl_sum[valid_net_cpl_mask])
+                    s_cpl_loss = self.compute_pex_loss(
+                        pred_cpl_sum[valid_net_cpl_mask], gt_cpl_sum[valid_net_cpl_mask])
                 else:
-                    s_cpl = torch.tensor(0.0, device=self.device)
+                    s_cpl_loss = torch.tensor(0.0, device=self.device)
 
-                tot_smape_sum += s_tot.item() if not torch.isnan(s_tot) else 1000.0
-                gnd_smape_sum += s_gnd.item() if not torch.isnan(s_gnd) else 1000.0
-                cpl_smape_sum += s_cpl.item() if not torch.isnan(s_cpl) else 1000.0
+                # 2) Real per-edge SMAPE (what we actually report to engineers)
+                pos_total = Y_total[net_indices] > 0.005
+                pos_gnd   = Y_gnd[net_indices]   > 0.005
+                eps = 1e-6
+                if pos_total.any():
+                    p, t = global_pred_total[pos_total], Y_total[net_indices][pos_total]
+                    real_tot_smape = (2.0 * torch.abs(p - t) / (torch.abs(p) + torch.abs(t) + eps)).mean() * 100.0
+                else:
+                    real_tot_smape = torch.tensor(0.0, device=self.device)
+                if pos_gnd.any():
+                    p, t = global_pred_gnd[pos_gnd], Y_gnd[net_indices][pos_gnd]
+                    real_gnd_smape = (2.0 * torch.abs(p - t) / (torch.abs(p) + torch.abs(t) + eps)).mean() * 100.0
+                else:
+                    real_gnd_smape = torch.tensor(0.0, device=self.device)
+                vam = valid_aggr_mask[net_indices].bool()
+                if vam.any():
+                    p_e = global_pred_cpl[vam]
+                    t_e = Y_cpl[net_indices][vam]
+                    real_cpl_smape = (2.0 * torch.abs(p_e - t_e) / (torch.abs(p_e) + torch.abs(t_e) + eps)).mean() * 100.0
+                else:
+                    real_cpl_smape = torch.tensor(0.0, device=self.device)
+
+                # 3) CPL magnitude calibration: Σ pred / Σ golden per net (median)
+                if valid_net_cpl_mask.any():
+                    cpl_ratio = pred_cpl_sum[valid_net_cpl_mask] / (gt_cpl_sum[valid_net_cpl_mask] + eps)
+                    real_cpl_ratio_median = torch.median(cpl_ratio) * 100.0  # %
+                else:
+                    real_cpl_ratio_median = torch.tensor(0.0, device=self.device)
+
+                tot_smape_sum += s_tot_loss.item() if not torch.isnan(s_tot_loss) else 1000.0
+                gnd_smape_sum += s_gnd_loss.item() if not torch.isnan(s_gnd_loss) else 1000.0
+                cpl_smape_sum += s_cpl_loss.item() if not torch.isnan(s_cpl_loss) else 1000.0
                 batches += 1
-                
+
+                # Stash real metrics on the last batch for the caller to use.
+                _real_tot_smape = real_tot_smape.item()
+                _real_gnd_smape = real_gnd_smape.item()
+                _real_cpl_smape = real_cpl_smape.item()
+                _real_cpl_ratio = real_cpl_ratio_median.item()
+
         self.model.train()
         avg_tot = tot_smape_sum / max(1, batches)
         avg_gnd = gnd_smape_sum / max(1, batches)
         avg_cpl = cpl_smape_sum / max(1, batches)
 
-        # Sign-off 지표로서 가장 중요한 Total Cap에 가장 높은 가중치(40%) 부여
         composite_score = (0.8 * avg_tot) + (0.1 * avg_gnd) + (0.1 * avg_cpl)
-        return composite_score, avg_tot, avg_gnd, avg_cpl
+        # Backward-compatible return (legacy 4-tuple) plus extras as attributes
+        # on the model for cheap retrieval. Use a NamedTuple-like return so old
+        # callers still unpack correctly.
+        return (composite_score, avg_tot, avg_gnd, avg_cpl,
+                _real_tot_smape if batches > 0 else float('nan'),
+                _real_gnd_smape if batches > 0 else float('nan'),
+                _real_cpl_smape if batches > 0 else float('nan'),
+                _real_cpl_ratio if batches > 0 else float('nan'))
 
     @torch.no_grad()
     def compute_net_mape(self, val_loader):
@@ -483,11 +535,16 @@ class NeuralFieldFinetuner(nn.Module):
                     loss_distribution = loss_dist_gnd + loss_dist_cpl
 
                     # Direct GND magnitude loss with curriculum warm-up.
+                    # Use al_iter * max_steps + step so the warmup runs once over
+                    # the entire AL run, not once per AL iteration. v9-era runs
+                    # silently lost GND supervision in the first 500 steps of
+                    # every iter due to per-call step reset.
+                    global_step = al_iter * max_steps + step
                     GND_WARMUP_START, GND_WARMUP_END, GND_WEIGHT_MAX = 500, 2000, 2.0
-                    if step < GND_WARMUP_START:
+                    if global_step < GND_WARMUP_START:
                         w_gnd = 0.0
-                    elif step < GND_WARMUP_END:
-                        w_gnd = GND_WEIGHT_MAX * (step - GND_WARMUP_START) / (GND_WARMUP_END - GND_WARMUP_START)
+                    elif global_step < GND_WARMUP_END:
+                        w_gnd = GND_WEIGHT_MAX * (global_step - GND_WARMUP_START) / (GND_WARMUP_END - GND_WARMUP_START)
                     else:
                         w_gnd = GND_WEIGHT_MAX
                     loss_gnd_direct = self.compute_netlevel_loss(global_pred_gnd, Y_gnd[net_indices])
@@ -516,8 +573,23 @@ class NeuralFieldFinetuner(nn.Module):
                     else:
                         loss_cpl_direct = torch.tensor(0.0, device=self.device)
 
+                    # P1: Per-edge CPL vector loss. Existing supervision is on
+                    # net-sum (loss_cpl_total) and proportions (loss_dist_cpl); neither
+                    # penalizes per-aggressor magnitude errors. CPL SMAPE plateaued at
+                    # the v10b ceiling (~340%) because edge-level allocation could be
+                    # arbitrary as long as the sum matched. This term supervises each
+                    # valid (net, aggressor) pair directly in linear space.
+                    pred_cpl_vec_v = global_pred_cpl[valid_aggr_global]
+                    gt_cpl_vec_v   = gt_cpl_v_all[valid_aggr_global]
+                    loss_cpl_vector = (
+                        self.compute_netlevel_loss(pred_cpl_vec_v, gt_cpl_vec_v)
+                        if pred_cpl_vec_v.numel() > 0
+                        else torch.tensor(0.0, device=self.device)
+                    )
+
                     loss = (loss_scale * 3.0
                           + loss_cpl_total * 1.0
+                          + loss_cpl_vector * 1.5    # P1: per-edge CPL magnitude
                           + loss_distribution * 0.10
                           + loss_gnd_direct * w_gnd
                           + loss_cpl_direct * w_cpl_direct)
@@ -535,16 +607,20 @@ class NeuralFieldFinetuner(nn.Module):
                 self.scheduler.step()
                 step += 1
                 profiler.stop("Backward_Update")
-                
+
                 if step % REPORT_PER_STEP == 0:
                     profiler.save_and_reset("FineTuning", f"Step_{step}")
-                    print(f">>> [FineTuner] Step {step:04d}: Train Loss = {loss.item():.4f} loss_scale: {loss_scale.item():.4f} loss_cpl_total: {loss_cpl_total.item():.4f} loss_distribution: {loss_distribution.item():.4f} loss_gnd: {loss_gnd_direct.item():.4f} (w={w_gnd:.2f}) loss_cpl_direct: {loss_cpl_direct.item():.4f} (w={w_cpl_direct:.2f})")
+                    print(f">>> [FineTuner] Step {step:04d}: Train Loss = {loss.item():.4f} loss_scale: {loss_scale.item():.4f} loss_cpl_total: {loss_cpl_total.item():.4f} loss_cpl_vector: {loss_cpl_vector.item():.4f} loss_distribution: {loss_distribution.item():.4f} loss_gnd: {loss_gnd_direct.item():.4f} (w={w_gnd:.2f}) loss_cpl_direct: {loss_cpl_direct.item():.4f} (w={w_cpl_direct:.2f})")
                     if val_loader is not None:
-                        val_score, s_tot, s_gnd, s_cpl = self.evaluate(val_loader)
+                        (val_score, s_tot_loss, s_gnd_loss, s_cpl_loss,
+                         real_tot_smape, real_gnd_smape, real_cpl_smape,
+                         real_cpl_ratio) = self.evaluate(val_loader)
                         net_mape = self.compute_net_mape(val_loader)
                         is_best = "🌟 BEST!" if np.isfinite(net_mape) and net_mape < self.best_val_score else ""
                         target_marker = " ✓ BEAT RULE-BASED" if net_mape < 4.0 else " (rule-based ~5%)"
-                        print(f"      - Validation SMAPE [%] -> Tot: {s_tot:.2f} | GND: {s_gnd:.2f} | CPL: {s_cpl:.2f}")
+                        print(f"      - Custom loss [%]   -> Tot: {s_tot_loss:.2f} | GND: {s_gnd_loss:.2f} | CPL: {s_cpl_loss:.2f}  (legacy compute_pex_loss, NOT SMAPE)")
+                        print(f"      - True SMAPE [%]    -> Tot: {real_tot_smape:.2f} | GND: {real_gnd_smape:.2f} | CPL (per-edge): {real_cpl_smape:.2f}")
+                        print(f"      - CPL ratio (med)   : {real_cpl_ratio:.1f}%  (Σpred / Σgolden per net — 100% = calibrated)")
                         print(f"      - Net-level MAPE    : {net_mape:.2f}%{target_marker}")
                         print(f"      - Composite Score: {val_score:.4f} {is_best}")
                         
@@ -555,7 +631,7 @@ class NeuralFieldFinetuner(nn.Module):
                     if save_dir is not None:
                         torch.save(self.model.state_dict(), Path(save_dir) / "checkpoint_latest.pth")
 
-                    probe_flux_router_anomalies(preds, step)
+                    probe_flux_router_anomalies(preds, step, model=self.model)
                 profiler.start("Data_Load")
                 if step >= max_steps: break
 

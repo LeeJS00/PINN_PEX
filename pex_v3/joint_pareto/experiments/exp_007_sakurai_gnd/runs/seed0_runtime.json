@@ -1,0 +1,13 @@
+{
+  "plate_build_s": 0.0004631010815501213,
+  "index_pass_s": 9.990540251135826,
+  "kdtree_build_s": 0.025291524827480316,
+  "spef_write_s": 17.90511583001353,
+  "nets_written": 3380,
+  "nets_skipped": 0,
+  "nets_total": 3380,
+  "n_workers_pass2": 16,
+  "chunksize_pass2": 52,
+  "redistribute_nodes": false,
+  "wall_clock_s": 27.934654630022123
+}

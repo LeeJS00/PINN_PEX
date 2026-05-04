@@ -1,0 +1,63 @@
+{
+  "config": {
+    "mode": "train",
+    "design": "intel22_gcd_f3",
+    "n_nets": 30,
+    "steps": 100,
+    "lr": 0.0005,
+    "r_aggr": 12.0,
+    "max_aggr": 2000,
+    "max_target": 1000,
+    "min_segs": 5,
+    "gpu": 0,
+    "seed": 0,
+    "gate": 0.1,
+    "log_interval": 50,
+    "eval_interval": 50,
+    "use_bins": false,
+    "use_aug": false,
+    "multi_design": false,
+    "n_seeds": 1
+  },
+  "physics_valid": {
+    "n": 8,
+    "gnd_mape_mean": 0.3310881329551028,
+    "cpl_mape_mean": 0.5889630797885408,
+    "tot_mape_mean": 0.4357449951028355,
+    "tot_mape_median": 0.4678811371104097,
+    "tot_mape_p95": 0.5871880117439372,
+    "pearson_r_total": 0.9654956466451682
+  },
+  "init_valid": {
+    "n": 8,
+    "gnd_mape_mean": 0.3310881329551028,
+    "cpl_mape_mean": 0.5889630797885408,
+    "tot_mape_mean": 0.4357449951028355,
+    "tot_mape_median": 0.4678811371104097,
+    "tot_mape_p95": 0.5871880117439372,
+    "pearson_r_total": 0.9654956466451682
+  },
+  "n_designs": 1,
+  "n_train": 22,
+  "n_valid": 8,
+  "seed_results": [
+    {
+      "seed": 0,
+      "best_valid": 0.1493894122884119,
+      "best_step": 50,
+      "final_valid": 0.1679278037664825,
+      "final_pearson": 0.9822573414387643,
+      "final_p95": 0.33369129664932734
+    }
+  ],
+  "summary": {
+    "best_valid_mean": 0.1493894122884119,
+    "best_valid_std": 0.0,
+    "best_valid_min": 0.1493894122884119,
+    "best_valid_max": 0.1493894122884119,
+    "final_valid_mean": 0.1679278037664825,
+    "final_valid_std": 0.0,
+    "final_p95_mean": 0.33369129664932734,
+    "pearson_r_mean": 0.9822573414387643
+  }
+}

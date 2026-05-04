@@ -1,0 +1,144 @@
+{
+  "direct_cat__seed0": {
+    "name": "direct_cat__seed0",
+    "n": 3169,
+    "mape_mean": 9.636390610268501,
+    "mape_mean_lo": 9.312848314233534,
+    "mape_mean_hi": 9.969131359171845,
+    "mape_median": 7.122397108062675,
+    "mape_p90": 19.83185120703667,
+    "mape_p99": 52.940408025243244
+  },
+  "direct_lgbm__seed0": {
+    "name": "direct_lgbm__seed0",
+    "n": 3169,
+    "mape_mean": 9.736011540024158,
+    "mape_mean_lo": 9.370757342710345,
+    "mape_mean_hi": 10.112835215877537,
+    "mape_median": 6.966283830546165,
+    "mape_p90": 20.323354977407387,
+    "mape_p99": 55.4983416380984
+  },
+  "direct_lgbm__seed1": {
+    "name": "direct_lgbm__seed1",
+    "n": 3169,
+    "mape_mean": 9.859698029921917,
+    "mape_mean_lo": 9.473686988993903,
+    "mape_mean_hi": 10.226785088444911,
+    "mape_median": 6.995811883477137,
+    "mape_p90": 20.116051038647182,
+    "mape_p99": 54.510754710433694
+  },
+  "direct_xgb__seed0": {
+    "name": "direct_xgb__seed0",
+    "n": 3169,
+    "mape_mean": 9.880775554749356,
+    "mape_mean_lo": 9.497742506646741,
+    "mape_mean_hi": 10.283906001477785,
+    "mape_median": 7.043506685198298,
+    "mape_p90": 20.244364096100472,
+    "mape_p99": 54.977162556318476
+  },
+  "direct_xgb__seed1": {
+    "name": "direct_xgb__seed1",
+    "n": 3169,
+    "mape_mean": 9.867400837388175,
+    "mape_mean_lo": 9.488553177745224,
+    "mape_mean_hi": 10.24032155344311,
+    "mape_median": 7.1079162351418494,
+    "mape_p90": 20.531935683698112,
+    "mape_p99": 54.249840767260196
+  },
+  "resmlp_v2__seed0": {
+    "name": "resmlp_v2__seed0",
+    "n": 3169,
+    "mape_mean": 10.725765176684463,
+    "mape_mean_lo": 10.318197482849424,
+    "mape_mean_hi": 11.099713975363002,
+    "mape_median": 7.760683314178244,
+    "mape_p90": 21.918423085964132,
+    "mape_p99": 57.11036584273473
+  },
+  "resmlp_v2__seed1": {
+    "name": "resmlp_v2__seed1",
+    "n": 3169,
+    "mape_mean": 10.55297721602671,
+    "mape_mean_lo": 10.161001276880715,
+    "mape_mean_hi": 10.92330074632937,
+    "mape_median": 7.6735789335498525,
+    "mape_p90": 21.95518012062341,
+    "mape_p99": 55.61918763627112
+  },
+  "resmlp_v2__seed2": {
+    "name": "resmlp_v2__seed2",
+    "n": 3169,
+    "mape_mean": 10.602437146653463,
+    "mape_mean_lo": 10.200940816394406,
+    "mape_mean_hi": 10.989332332974469,
+    "mape_median": 7.628250738197728,
+    "mape_p90": 22.2498359011197,
+    "mape_p99": 56.175088265588556
+  },
+  "resmlp_v2__seed3": {
+    "name": "resmlp_v2__seed3",
+    "n": 3169,
+    "mape_mean": 10.651604382999732,
+    "mape_mean_lo": 10.265694391592103,
+    "mape_mean_hi": 11.054251106846818,
+    "mape_median": 7.655757881950796,
+    "mape_p90": 22.338698080679112,
+    "mape_p99": 57.421233256201525
+  },
+  "resmlp_v2__seed4": {
+    "name": "resmlp_v2__seed4",
+    "n": 3169,
+    "mape_mean": 10.841367156494654,
+    "mape_mean_lo": 10.434346369030843,
+    "mape_mean_hi": 11.225918040420577,
+    "mape_median": 7.8328564877903855,
+    "mape_p90": 22.93182125055473,
+    "mape_p99": 54.324491310204195
+  },
+  "ENS_mean": {
+    "name": "ENS_mean",
+    "n": 3169,
+    "mape_mean": 9.331923222903974,
+    "mape_mean_lo": 9.000406529688943,
+    "mape_mean_hi": 9.652871339092911,
+    "mape_median": 7.012777177846744,
+    "mape_p90": 19.467578759595742,
+    "mape_p99": 48.16192814173423
+  },
+  "ENS_median": {
+    "name": "ENS_median",
+    "n": 3169,
+    "mape_mean": 9.161718470023745,
+    "mape_mean_lo": 8.840580202063236,
+    "mape_mean_hi": 9.467821481107984,
+    "mape_median": 6.8664898049022085,
+    "mape_p90": 19.39572377003488,
+    "mape_p99": 47.23607775083663
+  },
+  "ENS_blend_val": {
+    "name": "ENS_blend_val",
+    "n": 3169,
+    "mape_mean": 9.245064177937143,
+    "mape_mean_lo": 8.930087823510766,
+    "mape_mean_hi": 9.552741131516502,
+    "mape_median": 6.7454632186765995,
+    "mape_p90": 19.014742080294454,
+    "mape_p99": 51.51626362983262
+  },
+  "blend_weights": {
+    "direct_cat__seed0": 0.3807806326270252,
+    "direct_lgbm__seed0": 0.2371523979981768,
+    "direct_lgbm__seed1": 0.0,
+    "direct_xgb__seed0": 0.07365298971328674,
+    "direct_xgb__seed1": 0.0,
+    "resmlp_v2__seed0": 0.11069899242636616,
+    "resmlp_v2__seed1": 0.0,
+    "resmlp_v2__seed2": 0.0,
+    "resmlp_v2__seed3": 0.1880106916793725,
+    "resmlp_v2__seed4": 0.009704295555772543
+  }
+}

@@ -1,0 +1,180 @@
+{
+  "_schema": "joint_pareto.measurement.v1",
+  "variant_id": "v7_parallel",
+  "label": "Path-2 v7 parallel pass-2 (16 workers)",
+  "design": "intel22_tv80s_f3",
+  "n_seeds": 5,
+  "wall_clock_s": 27.77276664939709,
+  "wall_clock_s_stdev": 0.7666183619882216,
+  "wall_clock_per_seed": [
+    27.166731896810234,
+    27.252993678906932,
+    27.328513903077692,
+    28.934272214071825,
+    28.181321554118767
+  ],
+  "mean_of_mean_mape": 7.035337487435949,
+  "stdev_of_mean_mape": 0.044963143521998844,
+  "mean_of_median_mape": 5.440589127088134,
+  "stdev_of_median_mape": 0.051798359477013126,
+  "mean_of_p95_mape": 18.544452964936347,
+  "stdev_of_p95_mape": 0.3515146730029805,
+  "gnd_matched_mean": 27.20408572713166,
+  "gnd_matched_stdev": 0.2255737783045758,
+  "cpl_matched_mean": 18.70086718043502,
+  "cpl_matched_stdev": 0.06583755297947627,
+  "r_squared_c": 0.9933756913939634,
+  "r_squared_c_stdev": 0.00018022465588761005,
+  "per_seed": [
+    {
+      "seed": 0,
+      "metrics": {
+        "n_nets": 3380,
+        "n_matched": 3169,
+        "n_unmatched": 211,
+        "tot_mape_mean": 7.044664908184816,
+        "tot_mape_median": 5.396810137927311,
+        "tot_mape_p95": 18.84899317428477,
+        "gnd_mape_matched_mean": 27.367880839069024,
+        "gnd_mape_matched_median": 20.00349101660341,
+        "gnd_mape_unmatched_mean": 21.49655505850101,
+        "cpl_mape_matched_mean": 18.7756235080276,
+        "cpl_mape_matched_median": 14.197346171514289,
+        "cpl_mape_unmatched_mean": 27.29498779237367,
+        "r_squared_c": 0.9932665600831821,
+        "seed": 0
+      },
+      "runtime": {
+        "index_pass_s": 9.5885890040081,
+        "kdtree_build_s": 0.05866598291322589,
+        "spef_write_s": 17.50832231109962,
+        "nets_written": 3380,
+        "nets_skipped": 0,
+        "nets_total": 3380,
+        "n_workers_pass2": 16,
+        "chunksize_pass2": 52,
+        "wall_clock_s": 27.166731896810234
+      }
+    },
+    {
+      "seed": 1,
+      "metrics": {
+        "n_nets": 3380,
+        "n_matched": 3169,
+        "n_unmatched": 211,
+        "tot_mape_mean": 7.054146149864301,
+        "tot_mape_median": 5.48444422163195,
+        "tot_mape_p95": 18.855240990532167,
+        "gnd_mape_matched_mean": 27.330858045709746,
+        "gnd_mape_matched_median": 20.145896554169028,
+        "gnd_mape_unmatched_mean": 21.49655505850101,
+        "cpl_mape_matched_mean": 18.753655310666563,
+        "cpl_mape_matched_median": 14.16969064208228,
+        "cpl_mape_unmatched_mean": 27.29498779237367,
+        "r_squared_c": 0.9934572595055697,
+        "seed": 1
+      },
+      "runtime": {
+        "index_pass_s": 9.62205788306892,
+        "kdtree_build_s": 0.05849325307644904,
+        "spef_write_s": 17.560134731931612,
+        "nets_written": 3380,
+        "nets_skipped": 0,
+        "nets_total": 3380,
+        "n_workers_pass2": 16,
+        "chunksize_pass2": 52,
+        "wall_clock_s": 27.252993678906932
+      }
+    },
+    {
+      "seed": 2,
+      "metrics": {
+        "n_nets": 3380,
+        "n_matched": 3169,
+        "n_unmatched": 211,
+        "tot_mape_mean": 7.065236720699522,
+        "tot_mape_median": 5.479591219902998,
+        "tot_mape_p95": 18.33176479508324,
+        "gnd_mape_matched_mean": 27.263182322928984,
+        "gnd_mape_matched_median": 19.87298924351966,
+        "gnd_mape_unmatched_mean": 21.496555058501016,
+        "cpl_mape_matched_mean": 18.65045891046845,
+        "cpl_mape_matched_median": 14.258937554253933,
+        "cpl_mape_unmatched_mean": 27.29498779237367,
+        "r_squared_c": 0.993654155814577,
+        "seed": 2
+      },
+      "runtime": {
+        "index_pass_s": 9.874655707972124,
+        "kdtree_build_s": 0.023633451899513602,
+        "spef_write_s": 17.41600700793788,
+        "nets_written": 3380,
+        "nets_skipped": 0,
+        "nets_total": 3380,
+        "n_workers_pass2": 16,
+        "chunksize_pass2": 52,
+        "wall_clock_s": 27.328513903077692
+      }
+    },
+    {
+      "seed": 3,
+      "metrics": {
+        "n_nets": 3380,
+        "n_matched": 3169,
+        "n_unmatched": 211,
+        "tot_mape_mean": 6.955981188916035,
+        "tot_mape_median": 5.373051616882616,
+        "tot_mape_p95": 18.044284679277197,
+        "gnd_mape_matched_mean": 26.810154210211905,
+        "gnd_mape_matched_median": 19.712224363299303,
+        "gnd_mape_unmatched_mean": 21.49655505850101,
+        "cpl_mape_matched_mean": 18.620782530162963,
+        "cpl_mape_matched_median": 13.995102877585117,
+        "cpl_mape_unmatched_mean": 27.294987792373668,
+        "r_squared_c": 0.9932844647626156,
+        "seed": 3
+      },
+      "runtime": {
+        "index_pass_s": 9.778811918804422,
+        "kdtree_build_s": 0.06301488098688424,
+        "spef_write_s": 19.07731397706084,
+        "nets_written": 3380,
+        "nets_skipped": 0,
+        "nets_total": 3380,
+        "n_workers_pass2": 16,
+        "chunksize_pass2": 52,
+        "wall_clock_s": 28.934272214071825
+      }
+    },
+    {
+      "seed": 4,
+      "metrics": {
+        "n_nets": 3380,
+        "n_matched": 3169,
+        "n_unmatched": 211,
+        "tot_mape_mean": 7.056658469515069,
+        "tot_mape_median": 5.469048439095793,
+        "tot_mape_p95": 18.64198118550436,
+        "gnd_mape_matched_mean": 27.248353217738643,
+        "gnd_mape_matched_median": 19.84526884128173,
+        "gnd_mape_unmatched_mean": 21.49655505850101,
+        "cpl_mape_matched_mean": 18.703815642849516,
+        "cpl_mape_matched_median": 14.116415937601973,
+        "cpl_mape_unmatched_mean": 27.294987792373668,
+        "r_squared_c": 0.9932160168038726,
+        "seed": 4
+      },
+      "runtime": {
+        "index_pass_s": 9.751056110020727,
+        "kdtree_build_s": 0.02368011185899377,
+        "spef_write_s": 18.39435645006597,
+        "nets_written": 3380,
+        "nets_skipped": 0,
+        "nets_total": 3380,
+        "n_workers_pass2": 16,
+        "chunksize_pass2": 52,
+        "wall_clock_s": 28.181321554118767
+      }
+    }
+  ]
+}

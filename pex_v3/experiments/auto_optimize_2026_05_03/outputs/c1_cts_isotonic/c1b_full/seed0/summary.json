@@ -1,0 +1,88 @@
+{
+  "seed": 0,
+  "variant": "c1b_full",
+  "isotonic_info": {
+    "variant": "c1b_full",
+    "n_val_fit": 12594,
+    "n_test_apply": 95594,
+    "log_x_min": -4.577078045249393,
+    "log_x_max": 3.280655139412745
+  },
+  "baseline_valid": {
+    "gnd_mape_median": 0.191936142955085,
+    "gnd_mape_mean": 0.24113817348594502,
+    "cpl_mape_median": 0.12686830393110482,
+    "cpl_mape_mean": 0.1586632853746023,
+    "total_mape_median": 0.08688166698625147,
+    "total_mape_mean": 0.09831732772065793,
+    "n_nets": 12594
+  },
+  "baseline_test": {
+    "gnd_mape_median": 0.20802725637924496,
+    "gnd_mape_mean": 0.24064797734781898,
+    "cpl_mape_median": 0.15528248692986896,
+    "cpl_mape_mean": 0.20241241705826368,
+    "total_mape_median": 0.08764122187392667,
+    "total_mape_mean": 0.1028742662267759,
+    "n_nets": 95594
+  },
+  "baseline_top50_gnd": {
+    "gnd_rel_err_median": 2.5798989617874253,
+    "gnd_rel_err_mean": 2.9592846264941404,
+    "gnd_rel_err_max": 8.67580071726155,
+    "compact_gnd_median": 1.467333877398124,
+    "fanout_median": 89.0,
+    "n": 50
+  },
+  "corrected_valid": {
+    "gnd_mape_median": 0.19019622139833653,
+    "gnd_mape_mean": 0.25201125643476413,
+    "cpl_mape_median": 0.12686830393110482,
+    "cpl_mape_mean": 0.1586632853746023,
+    "total_mape_median": 0.06774600214033374,
+    "total_mape_mean": 0.08114173162332282,
+    "n_nets": 12594
+  },
+  "corrected_test": {
+    "gnd_mape_median": 0.19167725699432447,
+    "gnd_mape_mean": 0.25278226541279564,
+    "cpl_mape_median": 0.15528248692986896,
+    "cpl_mape_mean": 0.20241241705826368,
+    "total_mape_median": 0.0690374452788089,
+    "total_mape_mean": 0.08480260411714163,
+    "n_nets": 95594
+  },
+  "corrected_top50_gnd": {
+    "gnd_rel_err_median": 3.0809408851519,
+    "gnd_rel_err_mean": 3.50962630544229,
+    "gnd_rel_err_max": 9.837043522742581,
+    "compact_gnd_median": 1.31131747066909,
+    "fanout_median": 87.0,
+    "n": 50
+  },
+  "final_valid": {
+    "gnd_mape_median": 0.19019622139833653,
+    "gnd_mape_mean": 0.25201125643476413,
+    "cpl_mape_median": 0.12686830393110482,
+    "cpl_mape_mean": 0.1586632853746023,
+    "total_mape_median": 0.06774600214033374,
+    "total_mape_mean": 0.08114173162332282,
+    "n_nets": 12594
+  },
+  "final_test": {
+    "gnd_mape_median": 0.19167725699432447,
+    "gnd_mape_mean": 0.25278226541279564,
+    "cpl_mape_median": 0.15528248692986896,
+    "cpl_mape_mean": 0.20241241705826368,
+    "total_mape_median": 0.0690374452788089,
+    "total_mape_mean": 0.08480260411714163,
+    "n_nets": 95594
+  },
+  "best_epoch": -1,
+  "best_valid_total_mape": 0.06774600214033374,
+  "best_valid_gnd_mape": 0.19019622139833653,
+  "best_valid_cpl_mape": 0.12686830393110482,
+  "elapsed_train_sec": 0.0,
+  "calibration": "none_already_applied_in_baseline",
+  "verdict": "C1 c1b_full: gnd 20.803% -> 19.168%, top50 258.0% -> 308.1%"
+}

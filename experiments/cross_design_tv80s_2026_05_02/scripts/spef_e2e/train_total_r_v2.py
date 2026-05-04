@@ -1,0 +1,140 @@
+"""Train total_R model with LGBM + CatBoost ensemble (10 models).
+
+Replaces the 5-LGBM-only model. Target: reduce 19.91% MAPE.
+"""
+from __future__ import annotations
+
+import json
+import pickle
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+_HERE = Path(__file__).resolve().parent
+_WS = _HERE.parent.parent
+# PINNPEX root first (lower priority), workspace second (higher priority)
+sys.path.insert(0, str(_WS.parent.parent))
+sys.path.insert(0, str(_WS))
+
+from configs import cfg
+from src.data_loader import _select_feature_cols
+
+import importlib.util
+_spec = importlib.util.spec_from_file_location(
+    "compare_spef_pinpex",
+    str(_WS.parent.parent / "src" / "evaluation" / "compare_spef.py"),
+)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+parse_spef = _mod.parse_spef_with_coordinates
+
+
+def load_R_labels(design):
+    spef_path = cfg.SPEF_DIR / f"{design}_starrc.spef"
+    if not spef_path.exists():
+        return {}
+    nets = parse_spef(spef_path)
+    return {n: info["total_res"] for n, info in nets.items()}
+
+
+def _load(d, cache):
+    df = pd.read_parquet(cache / f"{d}.parquet")
+    df["design_name"] = d
+    R = load_R_labels(d)
+    df["total_res_label"] = df["net_name"].map(R).fillna(0.0)
+    return df
+
+
+def main():
+    cache = cfg.CACHE_DIR / "features_v3"
+    print("Loading designs...")
+    train = pd.concat([_load(d, cache) for d in cfg.TRAIN_DESIGNS], ignore_index=True)
+    val = pd.concat([_load(d, cache) for d in ["intel22_nova_f3"]], ignore_index=True)
+    test = pd.concat([_load(d, cache) for d in ["intel22_tv80s_f3"]], ignore_index=True)
+
+    fcols = [c for c in _select_feature_cols(train) if c != "total_res_label"]
+    print(f"features: {len(fcols)}, train: {len(train):,}, val: {len(val):,}, test: {len(test):,}")
+
+    eps = 0.1
+    y_tr = np.log(train["total_res_label"].to_numpy().clip(min=eps))
+    y_va = np.log(val["total_res_label"].to_numpy().clip(min=eps))
+    y_te_lin = test["total_res_label"].to_numpy()
+
+    X_tr = train[fcols].to_numpy(np.float32)
+    X_va = val[fcols].to_numpy(np.float32)
+    X_te = test[fcols].to_numpy(np.float32)
+
+    out_dir = cfg.OUTPUT_DIR / "spef_e2e" / "total_r"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    summary = []
+    print("\n=== LightGBM (5 seeds, retrain) ===", flush=True)
+    import lightgbm as lgb
+    for s in range(5):
+        ts = lgb.Dataset(X_tr, y_tr)
+        vs = lgb.Dataset(X_va, y_va, reference=ts)
+        booster = lgb.train(
+            dict(objective="regression", metric="rmse",
+                 learning_rate=0.03, num_leaves=255, min_data_in_leaf=20,
+                 feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=5,
+                 max_bin=511, seed=s, verbose=-1, n_jobs=8),
+            ts, num_boost_round=4000, valid_sets=[vs],
+            callbacks=[lgb.early_stopping(150), lgb.log_evaluation(0)])
+        pt = np.exp(booster.predict(X_te, num_iteration=booster.best_iteration))
+        ape = 100 * np.abs(pt - y_te_lin) / np.maximum(y_te_lin, 1e-3)
+        print(f"  LGBM seed{s}: test_mape={ape.mean():.3f}% best_iter={booster.best_iteration}")
+        with open(out_dir / f"lgbm_seed{s}.pkl", "wb") as f:
+            pickle.dump(booster, f)
+        summary.append({"model": "lgbm", "seed": s, "test_mape": float(ape.mean())})
+        # Also save with old naming for backward compat
+        with open(out_dir / f"seed{s}.pkl", "wb") as f:
+            pickle.dump(booster, f)
+
+    print("\n=== CatBoost (5 seeds) ===", flush=True)
+    try:
+        from catboost import CatBoostRegressor
+        for s in range(5):
+            mdl = CatBoostRegressor(iterations=2000, learning_rate=0.05, depth=8,
+                                     l2_leaf_reg=3.0, loss_function="RMSE",
+                                     eval_metric="RMSE", random_seed=s,
+                                     early_stopping_rounds=150, verbose=0)
+            mdl.fit(X_tr, y_tr, eval_set=(X_va, y_va))
+            pt = np.exp(mdl.predict(X_te))
+            ape = 100 * np.abs(pt - y_te_lin) / np.maximum(y_te_lin, 1e-3)
+            print(f"  CatBoost seed{s}: test_mape={ape.mean():.3f}%")
+            mdl.save_model(str(out_dir / f"cat_seed{s}.cbm"))
+            summary.append({"model": "cat", "seed": s, "test_mape": float(ape.mean())})
+    except Exception as e:
+        print(f"  CatBoost failed: {e}")
+
+    print("\n=== Ensemble ===", flush=True)
+    all_preds = []
+    for f in sorted(out_dir.glob("lgbm_seed*.pkl")):
+        with open(f, "rb") as fh:
+            booster = pickle.load(fh)
+        all_preds.append(np.exp(booster.predict(X_te, num_iteration=booster.best_iteration)))
+    try:
+        from catboost import CatBoostRegressor
+        for f in sorted(out_dir.glob("cat_seed*.cbm")):
+            mdl = CatBoostRegressor(); mdl.load_model(str(f))
+            all_preds.append(np.exp(mdl.predict(X_te)))
+    except Exception:
+        pass
+
+    if all_preds:
+        ens = np.mean(all_preds, axis=0)
+        ape = 100 * np.abs(ens - y_te_lin) / np.maximum(y_te_lin, 1e-3)
+        bias = ((ens - y_te_lin) / np.maximum(y_te_lin, 1e-3)).mean() * 100
+        print(f"  Ensemble (n={len(all_preds)}): test_mape_mean={ape.mean():.3f}% median={np.median(ape):.3f}% bias={bias:+.2f}%")
+
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+
+if __name__ == "__main__":
+    t0 = time.time()
+    main()
+    print(f"\nTotal time: {time.time() - t0:.1f}s")

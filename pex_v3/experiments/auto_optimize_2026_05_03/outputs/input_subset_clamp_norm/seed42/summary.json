@@ -1,0 +1,141 @@
+{
+  "seed": 42,
+  "variant": "HybridPexV3MeshInputSubsetClampNorm",
+  "n_epochs": 200,
+  "model_params": {
+    "cuboid_encoder": 9024,
+    "gnd_residual": 17601,
+    "cpl_residual": 18113,
+    "total": 44738
+  },
+  "elapsed_train_sec": 1215.5750722885132,
+  "gnd_interaction_channels": [
+    6,
+    7,
+    9
+  ],
+  "calibration": "per_layer",
+  "before_valid": {
+    "median_ratio_gnd": 0.347015175665579,
+    "p5_ratio_gnd": 0.17772107608312254,
+    "p95_ratio_gnd": 0.9358872918337412,
+    "iqr_ratio_gnd": 0.24462763107370844,
+    "median_ratio_cpl": 1.8096407265393504,
+    "p5_ratio_cpl": 0.767284040121933,
+    "p95_ratio_cpl": 4.382390767095335,
+    "iqr_ratio_cpl": 1.1954952740898945
+  },
+  "after_valid": {
+    "median_ratio_gnd": 1.0055528096252149,
+    "p5_ratio_gnd": 0.6041880960072619,
+    "p95_ratio_gnd": 2.713243299493399,
+    "iqr_ratio_gnd": 0.7089519957658257,
+    "median_ratio_cpl": 1.0069646287209606,
+    "p5_ratio_cpl": 0.4283422996254886,
+    "p95_ratio_cpl": 2.4212681136751404,
+    "iqr_ratio_cpl": 0.6669959872608663
+  },
+  "day1_valid": {
+    "gnd_mape_median": 0.29089251160621643,
+    "gnd_mape_mean": 0.5181713104248047,
+    "cpl_mape_median": 0.3107297718524933,
+    "cpl_mape_mean": 0.44909554719924927,
+    "total_mape_median": 0.2068929523229599,
+    "total_mape_mean": 0.2867680490016937,
+    "n_nets": 12594
+  },
+  "final_valid": {
+    "gnd_mape_median": 0.18459011614322662,
+    "gnd_mape_mean": 0.24096687138080597,
+    "cpl_mape_median": 0.12939058244228363,
+    "cpl_mape_mean": 0.16531343758106232,
+    "total_mape_median": 0.06950376182794571,
+    "total_mape_mean": 0.08531307429075241,
+    "n_nets": 12594
+  },
+  "final_test": {
+    "gnd_mape_median": 0.19251766800880432,
+    "gnd_mape_mean": 0.23536841571331024,
+    "cpl_mape_median": 0.1512724608182907,
+    "cpl_mape_mean": 0.2142661064863205,
+    "total_mape_median": 0.0698239877820015,
+    "total_mape_mean": 0.08568248152732849,
+    "n_nets": 95594
+  },
+  "best_epoch": 190,
+  "best_valid_total_mape": 0.06353646516799927,
+  "best_valid_gnd_mape": 0.19061045348644257,
+  "best_valid_cpl_mape": 0.12922517955303192,
+  "transition_log": {
+    "49": {
+      "valid_total_mape": 0.10809160023927689,
+      "valid_gnd_mape": 0.23526571691036224,
+      "valid_cpl_mape": 0.1773948222398758,
+      "clamp": 0.4054651081081644
+    },
+    "50": {
+      "valid_total_mape": 0.09572393447160721,
+      "valid_gnd_mape": 0.21417760848999023,
+      "valid_cpl_mape": 0.14422771334648132,
+      "clamp": 0.9162907318741551
+    },
+    "51": {
+      "valid_total_mape": 0.0934818685054779,
+      "valid_gnd_mape": 0.21126505732536316,
+      "valid_cpl_mape": 0.14323914051055908,
+      "clamp": 0.9162907318741551
+    },
+    "52": {
+      "valid_total_mape": 0.09504297375679016,
+      "valid_gnd_mape": 0.21981999278068542,
+      "valid_cpl_mape": 0.1539996713399887,
+      "clamp": 0.9162907318741551
+    },
+    "149": {
+      "valid_total_mape": 0.07540861517190933,
+      "valid_gnd_mape": 0.20740291476249695,
+      "valid_cpl_mape": 0.13564811646938324,
+      "clamp": 0.9162907318741551
+    },
+    "150": {
+      "valid_total_mape": 0.06655410677194595,
+      "valid_gnd_mape": 0.20229867100715637,
+      "valid_cpl_mape": 0.1318628191947937,
+      "clamp": 1.3862943611198906
+    },
+    "151": {
+      "valid_total_mape": 0.08946621417999268,
+      "valid_gnd_mape": 0.19054770469665527,
+      "valid_cpl_mape": 0.13504794239997864,
+      "clamp": 1.3862943611198906
+    },
+    "152": {
+      "valid_total_mape": 0.07249298691749573,
+      "valid_gnd_mape": 0.20173589885234833,
+      "valid_cpl_mape": 0.12890876829624176,
+      "clamp": 1.3862943611198906
+    }
+  },
+  "transition_gain_50_pp": 0.013048626482486725,
+  "transition_gain_150_pp": 0.0029156282544136047,
+  "phase2_max_abs_delta": 0.03310234844684601,
+  "phase2_mean_abs_delta": 0.012485805451869964,
+  "verdict": "FAIL",
+  "decision_gate": {
+    "pass_any": false,
+    "no_regression": true,
+    "transitions_preserved": true,
+    "thresholds": {
+      "gnd": 0.185,
+      "cpl": 0.147,
+      "total": 0.068,
+      "last_valid_total": 0.065
+    },
+    "single_best": {
+      "gnd": 0.1905,
+      "cpl": 0.1502,
+      "total": 0.0722
+    },
+    "single_clamp_norm_last_valid_total": 0.0666
+  }
+}

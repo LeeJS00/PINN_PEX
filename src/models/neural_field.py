@@ -26,13 +26,11 @@ class DeepPEX_Model(nn.Module):
     def __init__(self, config):
         super().__init__()
         input_dim = getattr(config, 'INPUT_DIM', 9)
-        # self.scale_factor = getattr(config, 'SCALE_FACTOR', 2.5)
         self.xy_scale = getattr(config, 'SCALE_FACTOR', 2.5)
-        # self.z_scale = getattr(config, 'Z_SCALE', 1.0)
 
         self.encoder = CuboidEncoder(input_dim, config.MODEL_DIM)
         layer_map = LayerInfoParser(config.LAYERS_INFO_PATH).parse()
-        cutoff_r = getattr(config, 'CUTOFF_RADIUS', 4.0)  # v9: 2.5 → 4.0 μm
+        cutoff_r = getattr(config, 'CUTOFF_RADIUS', 4.0)
         self.flux_router = NeuralFluxRouter(
             model_dim=config.MODEL_DIM,
             context_radius=4,   # 1-Hop 통신 반경
@@ -43,29 +41,25 @@ class DeepPEX_Model(nn.Module):
         self._step_counter = 0
 
     def freeze_ssl_layers(self):
-        # [FIX B supplement] Re-seed cpl/gnd head biases to identity AFTER SSL
-        # ckpt load — the shape-filtered loader preserves bias values from
-        # legacy checkpoints (old bias=0.1 → cpl_modifier≈5.3× at step 0).
-        # Done first so it runs regardless of any downstream attribute issue.
+        # Re-seed cpl/gnd head biases to identity AFTER SSL ckpt load — the
+        # shape-filtered loader preserves bias values from legacy checkpoints
+        # (old bias=0.1 → cpl_modifier≈5.3× at step 0). Done first so it runs
+        # regardless of any downstream attribute issue.
         cpl_bias = self.flux_router.cpl_mlp[-1].bias
         gnd_bias = self.flux_router.gnd_mlp[-1].bias
         with torch.no_grad():
-            cpl_bias.copy_(torch.tensor([-2.3026, -4.0], device=cpl_bias.device))
+            # P4 init: cpl_modifier = exp(0) = 1.0; cpl_residual = softplus(-4)*0.01 ≈ 1.8e-4
+            cpl_bias.copy_(torch.tensor([0.0, -4.0], device=cpl_bias.device))
             gnd_bias.zero_()
-            # Re-seed GND: prevents stale ≈1.0 values from SSL/AL checkpoints
-            # (loaded with strict=False) from overwriting the calibrated init.
+            # Re-seed GND density: prevents stale values from SSL/AL checkpoints
+            # (loaded with strict=False) from overwriting the canonical init.
             init_vals = self.flux_router._make_gnd_cap_density_init().to(
                 self.flux_router.layer_scale_phys_gnd.device)
             self.flux_router.layer_scale_phys_gnd.copy_(init_vals)
-            # Re-seed CPL scale parameters.
-            # v10 and earlier: scalar per-layer scale (layer_scale_phys_cpl).
-            # v10b: K×K symmetric layer-pair matrix (cpl_layer_pair_log_scale).
-            if hasattr(self.flux_router, 'layer_scale_phys_cpl'):
-                cpl_scale = self.flux_router.layer_scale_phys_cpl
-                cpl_scale.copy_(torch.full_like(cpl_scale, -1.45))
+            # Re-seed CPL pair scale matrix to canonical zero-init.
             if hasattr(self.flux_router, 'cpl_layer_pair_log_scale'):
-                self.flux_router.cpl_layer_pair_log_scale.data.zero_()  # softplus(0)≈0.693
-            # v9: Re-seed fringe scale with physics-based per-layer values
+                self.flux_router.cpl_layer_pair_log_scale.data.zero_()
+            # Re-seed fringe scale with physics-based per-layer values
             # (M1≈0.05 to M8≈0.90) instead of uniform sigmoid(-2)≈0.12.
             fringe_init = self.flux_router._make_gnd_fringe_scale_init().to(
                 self.flux_router.gnd_fringe_scale.device)
@@ -78,32 +72,23 @@ class DeepPEX_Model(nn.Module):
         for param in self.flux_router.gnd_mlp.parameters(): param.requires_grad = True
         for param in self.flux_router.cpl_mlp.parameters(): param.requires_grad = True
         self.flux_router.layer_scale_phys_gnd.requires_grad_(True)
-        if hasattr(self.flux_router, 'layer_scale_phys_cpl'):
-            self.flux_router.layer_scale_phys_cpl.requires_grad_(True)
         if hasattr(self.flux_router, 'cpl_layer_pair_log_scale'):
             self.flux_router.cpl_layer_pair_log_scale.requires_grad_(True)
         self.flux_router.gnd_fringe_scale.requires_grad_(True)
         if hasattr(self.flux_router, 'rail_scale'):
-            self.flux_router.rail_scale.data.fill_(-3.0)  # re-seed: softplus(-3)≈0.049
+            self.flux_router.rail_scale.data.fill_(-3.0)  # softplus(-3)≈0.049
             self.flux_router.rail_scale.requires_grad_(True)
         if hasattr(self.flux_router, 'vss_gnd_scale'):
-            self.flux_router.vss_gnd_scale.data.fill_(-3.0)  # re-seed: softplus(-3)≈0.049
+            self.flux_router.vss_gnd_scale.data.fill_(-3.0)  # softplus(-3)≈0.049
             self.flux_router.vss_gnd_scale.requires_grad_(True)
 
-        print("🔒 SSL Layers Frozen: Only 'charge_basis_mlp', 'gnd_mlp', 'cpl_mlp' are trainable.")
+        print("SSL layers frozen: encoder + flux_router.norm frozen. "
+              "Trainable: charge_basis/gnd/cpl mlps + per-layer scales "
+              "(layer_scale_phys_gnd, gnd_fringe_scale, cpl_layer_pair_log_scale, "
+              "vss_gnd_scale, rail_scale if enabled).")
 
     def forward(self, cuboids, padding_mask, compute_coupling=True, frw_ratio_matrix=None, n_tiles=None, endpoint_prox=None):
         self._step_counter += 1
-        
-        # -------------------------------------------------------------
-        # [PROFILING 1] 원본 피처 스케일 모니터링 (100 Step 마다 출력)
-        # -------------------------------------------------------------
-        # if self.training and self._step_counter % 100 == 0:
-        #     valid_c = cuboids[~padding_mask]
-        #     print(f"\n[Tensor Profiler - Step {self._step_counter}]")
-        #     print(f"  - X/Y (rel) : Min {valid_c[:,:2].min().item():.2f}, Max {valid_c[:,:2].max().item():.2f}, Std {valid_c[:,:2].std().item():.2f}")
-        #     print(f"  - Z (abs)   : Min {valid_c[:,2].min().item():.2f}, Max {valid_c[:,2].max().item():.2f}, Std {valid_c[:,2].std().item():.2f}")
-        #     print(f"  - W/H/D     : Min {valid_c[:,3:6].min().item():.2f}, Max {valid_c[:,3:6].max().item():.2f}, Std {valid_c[:,3:6].std().item():.2f}")
 
         # 1. Feature Extraction (고립된 큐보이드 피처)
         neural_cuboids = cuboids.clone()
@@ -117,12 +102,15 @@ class DeepPEX_Model(nn.Module):
 
         is_target = (cuboids[..., 7] == 1.0)
         is_aggr = (cuboids[..., 7] == 0.0)
-        # 2. Physics-Informed Neural Flux Routing
-        # 모든 KCL, 1-Hop 문맥, Sparse 차폐/거리가 이 함수 안에서 C++ 속도로 처리됨.
-        # preds = self.flux_router(feats, norm_cuboids, is_target, is_aggr, padding_mask, compute_coupling)
-        preds = self.flux_router(feats, cuboids, is_target, is_aggr, padding_mask, compute_coupling, frw_ratio_matrix=frw_ratio_matrix, n_tiles=n_tiles, endpoint_prox=endpoint_prox)
+        # 2. Physics-Informed Neural Flux Routing (1-hop GNN + surface physics)
+        preds = self.flux_router(
+            feats, cuboids, is_target, is_aggr, padding_mask,
+            compute_coupling,
+            frw_ratio_matrix=frw_ratio_matrix,
+            n_tiles=n_tiles,
+            endpoint_prox=endpoint_prox,
+        )
         preds['is_target'] = is_target
         preds['is_aggr'] = is_aggr
-        
-        return preds
 
+        return preds

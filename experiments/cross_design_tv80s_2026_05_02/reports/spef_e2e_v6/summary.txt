@@ -1,0 +1,24 @@
+E2E SPEF Validation Summary — tv80s v6 (20-mdl stratum + DeepSet + R stratum + cgnd direct stratum)
+============================================================
+
+Predicted SPEF: output/spef_e2e/_test_e2e_v6/tv80s_v6.spef
+Golden SPEF:    /home/jslee/projects/PEX_SSL/golden_data/spef_data/intel22/intel22_tv80s_f3_starrc.spef
+Common nets:    3280
+
+Per-net metrics:
+     metric    n  mape_mean  mape_median  mape_p90     ci_lo     ci_hi  bias_pct   r2_lin   r2_log     g_mean     p_mean
+  total_cap 3280   8.109446     6.182686 16.357938  7.828673  8.407336 -0.797294 0.969256 0.987156   1.358192   1.303572
+      c_gnd 3280  21.723684    17.573937 43.794999 21.067013 22.377305  1.028680 0.945892 0.951820   0.532418   0.488605
+c_cpl_total 3280  17.632406    13.408616 35.957676 17.042360 18.211055  5.517758 0.946515 0.967109   0.825774   0.814967
+  total_res 3280  11.924690     7.211519 27.747589 11.437653 12.405335 -4.770959 0.939260 0.887644 250.674857 224.540631
+
+Per-pair metrics:
+  n_predicted: 462963
+  n_golden: 98916
+  n_common: 74313
+  coverage_pct_of_golden: 75.12738080795826
+  mape_mean: 110.11168998939415
+  mape_median: 54.622706165727195
+  mape_p90: 182.38989386372504
+  ci_lo: 106.70644479333522
+  ci_hi: 113.87259609946875

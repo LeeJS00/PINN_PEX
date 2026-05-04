@@ -1,0 +1,24 @@
+E2E SPEF Validation Summary — tv80s (v3 cached cuboids — direct c_gnd + R v2)
+============================================================
+
+Predicted SPEF: output/spef_e2e/_test_e2e_v3_cached/tv80s_v3_cached.spef
+Golden SPEF:    /home/jslee/projects/PEX_SSL/golden_data/spef_data/intel22/intel22_tv80s_f3_starrc.spef
+Common nets:    3280
+
+Per-net metrics:
+     metric    n  mape_mean  mape_median  mape_p90     ci_lo     ci_hi  bias_pct   r2_lin   r2_log     g_mean     p_mean
+  total_cap 3280   9.119660     6.900653 18.524916  8.794234  9.449860  1.536164 0.965159 0.987017   1.358192   1.353551
+      c_gnd 3280  22.455297    17.467327 47.383216 21.741992 23.165405  4.275660 0.947682 0.952314   0.532418   0.508699
+c_cpl_total 3280  18.423810    13.985996 39.380590 17.825794 19.009261  7.323858 0.938274 0.966487   0.825774   0.844852
+  total_res 3280  12.894842     8.177915 30.122966 12.403833 13.372431 -5.333280 0.937311 0.907110 250.674857 223.519409
+
+Per-pair metrics:
+  n_predicted: 462963
+  n_golden: 98916
+  n_common: 74313
+  coverage_pct_of_golden: 75.12738080795826
+  mape_mean: 114.73603704155725
+  mape_median: 55.66219830716652
+  mape_p90: 193.55915479648834
+  ci_lo: 110.88234059600748
+  ci_hi: 118.77337624986106

@@ -1,0 +1,17 @@
+{
+  "design": "intel22_tv80s_f3",
+  "n_nets_meta": 3380,
+  "n_workers_index_pass": 1,
+  "timings_s": {
+    "index_pass_s": 10.085622468963265,
+    "kdtree_build_s": 0.025166553910821676,
+    "topo_reload_s": 11.185622093034908,
+    "analytic_estimate_s": 0.019178495509549975,
+    "aggressor_weights_s": 52.013307756744325,
+    "rc_topology_build_s": 3.42450725287199,
+    "spef_write_s": 1.1231096009723842,
+    "pass2_total_s": 67.83327514096163,
+    "nets_written": 3380
+  },
+  "pass2_subtotal_s": 67.76572519913316
+}

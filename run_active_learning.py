@@ -7,6 +7,23 @@ from datetime import datetime
 import gc
 from pathlib import Path
 import argparse
+import os
+import random
+import numpy as np
+
+
+def apply_global_seed(seed: int) -> None:
+    """Seed every RNG that affects training reproducibility.
+
+    torch.compile + cudnn benchmarking remain non-deterministic by design;
+    the goal here is to give each seed a distinct, reproducible *trajectory*,
+    not bit-exact reproduction.
+    """
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 sys.path.append(str(Path(__file__).parent))
 
@@ -21,29 +38,44 @@ from src.trainers.finetuner import NeuralFieldFinetuner
 import configs.config as cfg
 from src.utils.profiler import RuntimeProfiler
 
-def load_or_create_predefined_cache(pool_df, train_buffer, val_buffer, oracle, def_map, cache_dir, num_train=2000, num_val=500):
+def load_or_create_predefined_cache(pool_df, train_buffer, val_buffer, oracle, def_map, cache_dir, num_train=2000, num_val=1500):
     """
     [Fast Engineering Mode]
     모델의 구조, 피처, 그래디언트를 빠르게 테스트하기 위해 고정된 크기의 Train/Valid 셋을 캐싱합니다.
+
+    Returns the set of (design_name, net_name) pairs reserved for validation,
+    so callers can anti-join them out of the AL pool.
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
     train_cache_path = cache_dir / "predefined_train_subset.csv"
     val_cache_path = cache_dir / "predefined_valid_subset.csv"
-    
+
     # 1. 캐시 히트 (Cache Hit): 1초 만에 로딩
     if train_cache_path.exists() and val_cache_path.exists():
         print(f"\n>>> ⚡ [FAST MODE] Loading Predefined Datasets from {cache_dir.name}...")
         train_df = pd.read_csv(train_cache_path)
         val_df = pd.read_csv(val_cache_path)
-        
-        # [CRITICAL FIX] 껍데기(CSV)만 로드하고 정답지(SPEF)를 파싱하지 않아 Validation이 0점이 나오는 버그 해결
-        # CSV의 메타데이터를 기반으로, Oracle을 호출해 실제 정답지(Capacitance)를 Buffer 메모리에 주입합니다.
+
+        # Detect & repair legacy caches contaminated by the pre-fix sampler.
+        # Older caches sometimes shared (design,net) pairs across both files,
+        # which leaked validation nets into the train buffer.
+        train_pairs = set(zip(train_df['design_name'], train_df['net_name']))
+        val_pairs   = set(zip(val_df['design_name'],   val_df['net_name']))
+        leaked_pairs = train_pairs & val_pairs
+        if leaked_pairs:
+            print(f"  ⚠️ [Cache Audit] {len(leaked_pairs)} (design,net) pairs found in BOTH caches "
+                  f"— removing from TRAIN cache to preserve validation purity.")
+            mask = ~pd.MultiIndex.from_arrays(
+                [train_df['design_name'], train_df['net_name']]
+            ).isin(leaked_pairs)
+            train_df = train_df[mask].reset_index(drop=True)
+
         for d_name in val_df['design_name'].unique():
             d_def_path = def_map.get(d_name)
             if d_def_path:
                 d_spef = oracle.generate_golden_spef(d_name, d_def_path)
                 val_buffer.add_design(d_name, val_df[val_df['design_name'] == d_name], d_spef)
-                
+
         for d_name in train_df['design_name'].unique():
             d_def_path = def_map.get(d_name)
             if d_def_path:
@@ -51,37 +83,56 @@ def load_or_create_predefined_cache(pool_df, train_buffer, val_buffer, oracle, d
                 train_buffer.add_design(d_name, train_df[train_df['design_name'] == d_name], d_spef)
 
         print(f"  - Train Tiles: {len(train_buffer.all_data)} | Valid Tiles: {len(val_buffer.all_data)}")
-        return True
-        
+        return val_pairs
+
     # 2. 캐시 미스 (Cache Miss): 최초 1회 생성
+    # Order: build VALIDATION cache first, then TRAIN cache with validation
+    # nets excluded. The manifest split is tile-level so 12.3% of nets have
+    # tiles in both train and valid splits; sampling them independently can
+    # land the same (design,net) pair in both caches. Anti-joining keeps val
+    # purity at the cost of slightly fewer train candidates.
     print("\n>>> 🐢 [CACHE MISS] Creating Predefined Datasets for the first time...")
-    
-    def _build_and_inject(split_name, target_buffer, num_nets, cache_path):
-        candidates = pool_df[pool_df['split'] == split_name].copy()
-        candidates = candidates[~candidates['design_name'].str.contains('mpeg')]
-        unique_nets = candidates[['design_name', 'net_name']].drop_duplicates()
-        
-        sampled_nets = unique_nets.sample(n=min(num_nets, len(unique_nets)), random_state=42)
-        full_tiles = pd.merge(pool_df, sampled_nets, on=['design_name', 'net_name'])
-        
-        for d_name in full_tiles['design_name'].unique():
-            d_def_path = def_map.get(d_name)
-            if d_def_path:
-                d_spef = oracle.generate_golden_spef(d_name, d_def_path)
-                target_buffer.add_design(d_name, full_tiles[full_tiles['design_name'] == d_name], d_spef)
-                
-        # CSV 저장
-        if not target_buffer.all_data.empty:
-            target_buffer.all_data.to_csv(cache_path, index=False)
-            print(f"  ✅ Saved {split_name} cache: {len(target_buffer.all_data)} tiles.")
-            
+
+    candidates_val = pool_df[pool_df['split'] == 'valid'].copy()
+    candidates_val = candidates_val[~candidates_val['design_name'].str.contains('mpeg')]
+    val_unique = candidates_val[['design_name', 'net_name']].drop_duplicates()
+    val_sample = val_unique.sample(n=min(num_val, len(val_unique)), random_state=42)
+    val_full = pd.merge(pool_df, val_sample, on=['design_name', 'net_name'])
+
     print(">>> Building Validation Cache...")
-    _build_and_inject('valid', val_buffer, num_val, val_cache_path)
-    
+    for d_name in val_full['design_name'].unique():
+        d_def_path = def_map.get(d_name)
+        if d_def_path:
+            d_spef = oracle.generate_golden_spef(d_name, d_def_path)
+            val_buffer.add_design(d_name, val_full[val_full['design_name'] == d_name], d_spef)
+    if not val_buffer.all_data.empty:
+        val_buffer.all_data.to_csv(val_cache_path, index=False)
+        print(f"  ✅ Saved valid cache: {len(val_buffer.all_data)} tiles.")
+
+    val_pairs = set(zip(val_sample['design_name'], val_sample['net_name']))
+
+    candidates_train = pool_df[pool_df['split'] == 'train'].copy()
+    candidates_train = candidates_train[~candidates_train['design_name'].str.contains('mpeg')]
+    train_unique = candidates_train[['design_name', 'net_name']].drop_duplicates()
+    train_unique = train_unique[
+        ~pd.MultiIndex.from_arrays(
+            [train_unique['design_name'], train_unique['net_name']]
+        ).isin(val_pairs)
+    ]
+    train_sample = train_unique.sample(n=min(num_train, len(train_unique)), random_state=42)
+    train_full = pd.merge(pool_df, train_sample, on=['design_name', 'net_name'])
+
     print(">>> Building Train Cache...")
-    _build_and_inject('train', train_buffer, num_train, train_cache_path)
-    
-    return True
+    for d_name in train_full['design_name'].unique():
+        d_def_path = def_map.get(d_name)
+        if d_def_path:
+            d_spef = oracle.generate_golden_spef(d_name, d_def_path)
+            train_buffer.add_design(d_name, train_full[train_full['design_name'] == d_name], d_spef)
+    if not train_buffer.all_data.empty:
+        train_buffer.all_data.to_csv(train_cache_path, index=False)
+        print(f"  ✅ Saved train cache: {len(train_buffer.all_data)} tiles.")
+
+    return val_pairs
 
 def prepare_net_centric_validation(pool_df, val_buffer, oracle, def_map, num_val_nets=100):
     """
@@ -120,13 +171,19 @@ def prepare_net_centric_validation(pool_df, val_buffer, oracle, def_map, num_val
 
 
 def main(args):
+    apply_global_seed(args.seed)
+    print(f">>> Global seed set to {args.seed}")
+
     MAX_BUDGET_RATIO = cfg.AL_MAX_BUDGET_RATIO
     MIN_ENTROPY_THRESHOLD = cfg.AL_MIN_ENTROPY_THRESHOLD
-    TRAIN_STEPS_PER_ITER = cfg.AL_TRAIN_STEPS_PER_ITER
+    TRAIN_STEPS_PER_ITER = (
+        args.steps_per_iter if getattr(args, 'steps_per_iter', None) is not None
+        else cfg.AL_TRAIN_STEPS_PER_ITER
+    )
     AL_SAMPLING_METHOD = cfg.AL_SAMPLING_METHOD
-    USE_FAST_ENGINEERING_MODE = True 
+    USE_FAST_ENGINEERING_MODE = True
     GPU_ID = args.gpu if args.gpu is not None else cfg.GPU_ID
-    DEVICE = f"cuda:{GPU_ID}" if torch.cuda.is_available() else "cpu"    
+    DEVICE = f"cuda:{GPU_ID}" if torch.cuda.is_available() else "cpu"
 
     DATA_DIR = Path(cfg.PROCESSED_DIR)
     basis_ckpt_dir = Path(cfg.OUTPUT_DIR) / "checkpoints" / cfg.RUN_NAME
@@ -165,7 +222,7 @@ def main(args):
                 
             missing, unexpected = model.load_state_dict(filtered_state, strict=False)
             model.freeze_ssl_layers() # SSL 지식 보존 및 Finetune 파라미터 격리
-            print(f"✅ Loaded & Frozen Basis Model. (Missing Keys: {len(missing)} - Normal for new Physics layers)")      
+            print(f"✅ Loaded & Frozen Basis Model. (Missing Keys: {len(missing)} - Normal for new Physics layers)")
     
     elif args.model_type == "GNNCap":
         model = GNN_Cap(cfg).to(DEVICE)
@@ -191,9 +248,23 @@ def main(args):
     
     if USE_FAST_ENGINEERING_MODE:
         print("\n>>> 🚀 [FAST ENGINEERING MODE] Using Predefined Datasets...")
-        load_or_create_predefined_cache(pool_df, train_buffer, val_buffer, oracle, def_map, cache_dir=OUTPUT_DIR / "cache")
+        val_pairs = load_or_create_predefined_cache(pool_df, train_buffer, val_buffer, oracle, def_map, cache_dir=OUTPUT_DIR / "cache")
         val_loader = val_buffer.get_dataloader()
         pool_df = pool_df[pool_df['split'] == 'train'].reset_index(drop=True)
+        # Anti-join: a net with mixed train/valid tiles can leave its train
+        # tiles in pool_df after the split filter, letting AL re-label and
+        # train on a net that's already in val_buffer. Drop them.
+        if val_pairs:
+            pre = len(pool_df)
+            pool_df = pool_df[
+                ~pd.MultiIndex.from_arrays(
+                    [pool_df['design_name'], pool_df['net_name']]
+                ).isin(val_pairs)
+            ].reset_index(drop=True)
+            dropped = pre - len(pool_df)
+            if dropped > 0:
+                print(f"  🛡️ [Leak Guard] Removed {dropped} train-pool tiles "
+                      f"belonging to validation nets ({len(val_pairs)} pairs).")
     elif 'split' in pool_df.columns:
         pool_df, val_loader = prepare_net_centric_validation(pool_df, val_buffer, oracle, def_map, num_val_nets=100)
     else:
@@ -262,10 +333,15 @@ def main(args):
     iteration = 0
     al_profiler = RuntimeProfiler(MODEL_DIR / "al_macro_runtime.csv")
 
+    max_iters = getattr(args, 'max_iters', None)
+
     while True:
         print(f"\n>>> [Iteration {iteration}] Starting AL Cycle...")
+        if max_iters is not None and iteration >= max_iters:
+            print(f"\n>>> 🛑 [STOP] --max_iters cap reached ({iteration}/{max_iters}).")
+            break
         if len(pool_df) == 0: break
-        if current_labeled_count + NETS_PER_ITER > TOTAL_NET_BUDGET: 
+        if current_labeled_count + NETS_PER_ITER > TOTAL_NET_BUDGET:
             print(f"\n>>> 🛑 [STOP] Hard Net Budget Cap Exhausted ({current_labeled_count}/{TOTAL_NET_BUDGET}).")
             break
             
@@ -397,5 +473,13 @@ if __name__ == "__main__":
     parser.add_argument('--model_name', type=str, required=True)
     parser.add_argument('--gpu', type=int, default=1)
     parser.add_argument('--model_type', default="DeepPEX", choices=['DeepPEX', 'GNNCap'])
+    parser.add_argument('--seed', type=int, default=0,
+                        help='Global RNG seed applied to torch / numpy / random / cuda. '
+                             'Used by the 5-seed measurement protocol.')
+    parser.add_argument('--max_iters', type=int, default=None,
+                        help='Cap the AL loop at this many iterations (e.g. 1 for the '
+                             '5-seed 5000-step measurement). None = use config budget.')
+    parser.add_argument('--steps_per_iter', type=int, default=None,
+                        help='Override cfg.AL_TRAIN_STEPS_PER_ITER for this run.')
     args = parser.parse_args()
     main(args)

@@ -1,6 +1,7 @@
 # ==========================================================
 # FILE: src/evaluation/evaluator.py
 # ==========================================================
+import os
 import torch
 import pandas as pd
 import numpy as np
@@ -405,8 +406,14 @@ def evaluate_model(args, spef_write=False):
         layer_map = LayerInfoParser(cfg.LAYERS_INFO_PATH).parse()
         tech_lef = LefParser(cfg.TECH_LEF_PATH).parse()
         eval_profiler = RuntimeProfiler(MODEL_DIR / "eval_spef_runtime.csv")
+        # Optional design filter via env var. Empty/unset → process ALL test designs.
+        # Example: SPEF_DESIGN_FILTER=intel22_tv80s_f3 → only tv80s.
+        # Original hardcoded `if design_name != "intel22_tv80s_f3": continue` removed
+        # 2026-05-03 to enable nova full-chip SPEF E2E (118,974 nets).
+        _design_filter = os.environ.get("SPEF_DESIGN_FILTER", "").strip()
         for design_name, group_df in test_df.groupby('design_name'):
-            if design_name != "intel22_tv80s_f3": continue
+            if _design_filter and design_name != _design_filter:
+                continue
 
             topo_cache = {}
             global_top_ports = set()
@@ -421,8 +428,11 @@ def evaluate_model(args, spef_write=False):
 
             print(f"\n>>> Processing Design: {design_name} ({len(group_df)} tiles)")
 
+            # Optional batch_size override via env var (Codex Round 6 runtime lever).
+            # Default 64; setting larger (256+) reduces wall-clock with negligible accuracy delta.
+            _spef_bs = int(os.environ.get("SPEF_INFER_BATCH", "256"))
             dataset = NeuralFieldEvalDataset(DATA_DIR, group_df, pad_size=4096)
-            loader = torch.utils.data.DataLoader(dataset, batch_size=64, collate_fn=robust_collate, num_workers=8, pin_memory=True)
+            loader = torch.utils.data.DataLoader(dataset, batch_size=_spef_bs, collate_fn=robust_collate, num_workers=8, pin_memory=True)
 
             distributed_nodes = defaultdict(lambda: defaultdict(lambda: {'gnd': 0.0, 'cpl': defaultdict(float), 'abs_geo': None}))
             cuboid_accumulators = defaultdict(lambda: defaultdict(lambda: {'gnd': 0.0, 'cpl': defaultdict(float), 'abs_geo': None, 'weight_sum': 0.0}))

@@ -1,0 +1,24 @@
+E2E SPEF Validation Summary — tv80s FINAL TRUE e2e (DEF only)
+============================================================
+
+Predicted SPEF: output/spef_e2e/_test_e2e_FINAL_true/tv80s_FINAL_true.spef
+Golden SPEF:    /home/jslee/projects/PEX_SSL/golden_data/spef_data/intel22/intel22_tv80s_f3_starrc.spef
+Common nets:    3280
+
+Per-net metrics:
+     metric    n  mape_mean  mape_median  mape_p90     ci_lo     ci_hi   bias_pct   r2_lin   r2_log     g_mean     p_mean
+  total_cap 3280  10.588199     7.423560 21.976852 10.158735 11.018876   0.323211 0.939155 0.980596   1.358192   1.248657
+      c_gnd 3280  27.786737    20.229581 62.135755 26.818593 28.817440  12.832085 0.924098 0.937166   0.532418   0.548879
+c_cpl_total 3280  19.850951    15.597441 40.091969 19.205540 20.515189   1.331321 0.876499 0.955188   0.825774   0.699778
+  total_res 3280  18.575956    12.153557 44.911555 17.941889 19.216540 -14.109469 0.864614 0.797395 250.674857 196.724797
+
+Per-pair metrics:
+  n_predicted: 446433
+  n_golden: 98916
+  n_common: 74202
+  coverage_pct_of_golden: 75.0151643818998
+  mape_mean: 97.45503296257449
+  mape_median: 51.887007294294676
+  mape_p90: 150.4481812238244
+  ci_lo: 94.24367401706424
+  ci_hi: 100.80814223904915

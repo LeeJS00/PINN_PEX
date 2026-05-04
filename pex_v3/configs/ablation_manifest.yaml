@@ -1,0 +1,180 @@
+# ablation_manifest.yaml — Week 1 sprint ablation registry.
+#
+# Each variant entry tells `run_ablation_5seed.py` how to instantiate the
+# model + train it. The runner reuses the EXACT same train/valid/test
+# split as the locked HybridPexV3Mesh 5-seed (split column from H1
+# manifest), the same NNLS per-layer calibration, and the same
+# CuboidAugmentedDataset / collate function. Only what's listed under
+# `model:` and `train:` may differ between variants.
+#
+# All variants MUST emit per-net `eval_logger.parquet` for valid + test;
+# `aggregate_ablation_summary.py` and `stratify_eval.py` consume them.
+#
+# Variant naming convention:
+#   <Family><Mod>      e.g. HybridPexV3Mesh, HybridPexV3MeshPerChannel
+#
+# Sprint targets (gnd ≤17%, cpl ≤13%, total ≤6.5% last-step):
+#   - HybridPexV3Mesh             — locked baseline (self-test)
+#   - HybridPexV3MeshPerChannel   — A1: per-channel cuboid encoders
+#   - HybridPexV3MeshAdditive     — A2: bounded-additive residual (drop multiplicative)
+#   - HybridPexV3MeshPerPair      — B1: per-pair Sakurai head
+#   - HybridPexV3MeshCTSIso       — C1: CTS isotonic post-correction (eval-time)
+
+defaults:
+  data:
+    features_csv: /data/PINNPEX/data/processed_v3/intel22/features/all_designs.csv
+    cuboid_dir:   /data/PINNPEX/data/processed_v3/intel22/per_net_cuboids
+    use_calibration: per_layer       # NNLS calibration on train only (cf. seed0 summary.json)
+  train:
+    n_epochs: 200
+    batch_size: 256
+    lr: 1.0e-3
+    weight_decay: 1.0e-5
+    num_workers: 4
+    early_stop_patience: 99999       # disabled by default (matches locked 5-seed run)
+    curriculum: true                 # 0.405 → 0.916 → 1.386 (clamp_for_epoch)
+    eval_every_n_epochs: 1
+    log_every_n_steps: 500
+  output_root: pex_v3/output/ablation
+
+variants:
+
+  # -------------------------------------------------------------------------
+  # Self-test: reproduces the locked HybridPexV3Mesh 5-seed numbers.
+  # final_test total median ≈ 8.272% ± 0.38pp;  seed 0 ≈ 8.764%.
+  # -------------------------------------------------------------------------
+  HybridPexV3Mesh:
+    description: "Locked baseline: cuboid set encoder + bounded multiplicative residual."
+    model:
+      module: src.models.hybrid_v3_mesh
+      class:  HybridPexV3Mesh
+      kwargs:
+        cuboid_in_dim: 10
+        cuboid_hidden: 64
+        cuboid_embed_dim: 64
+        cuboid_n_layers: 2
+        residual_hidden: 64
+        residual_n_hidden: 2
+        # clamp_bound left at default; curriculum overrides per-epoch
+    train: {}                       # all defaults
+
+  # -------------------------------------------------------------------------
+  # A1 placeholder — per-channel cuboid encoders (separate gnd/cpl pools).
+  # Implementation lives in src/models/hybrid_v3_mesh_per_channel.py (TBD).
+  # -------------------------------------------------------------------------
+  HybridPexV3MeshPerChannel:
+    description: "A1 — per-channel cuboid encoders (gnd-pool + cpl-pool separate)."
+    model:
+      module: src.models.hybrid_v3_mesh_per_channel
+      class:  HybridPexV3MeshPerChannel
+      kwargs:
+        cuboid_hidden: 64
+        cuboid_embed_dim: 64
+        cuboid_n_layers: 2
+        residual_hidden: 64
+        residual_n_hidden: 2
+    train: {}
+
+  # -------------------------------------------------------------------------
+  # InputSubset — per-channel input zero-masking (shared encoder weights).
+  # gnd input zeros interaction columns (semantic_type, is_target, net_type);
+  # cpl input keeps full tensor. Same encoder, same params as baseline.
+  # See: experiments/auto_optimize_2026_05_03/variants/input_subset/DESIGN.md
+  # -------------------------------------------------------------------------
+  HybridPexV3MeshInputSubset:
+    description: "InputSubset — per-channel input zero-masking, shared encoder weights."
+    model:
+      module: src.models.hybrid_v3_mesh_input_subset
+      class:  HybridPexV3MeshInputSubset
+      kwargs:
+        cuboid_hidden: 64
+        cuboid_embed_dim: 64
+        cuboid_n_layers: 2
+        residual_hidden: 64
+        residual_n_hidden: 2
+        gnd_interaction_channels: [6, 7, 9]
+    train: {}
+
+  # -------------------------------------------------------------------------
+  # ClampNorm — norm-projection clamp on residual vector (per-net joint L2
+  # over (delta_gnd, delta_cpl)). Same params, same curriculum. Eliminates
+  # Phase 0->1 / Phase 1->2 valid spikes (-0.60pp/-0.96pp vs baseline
+  # +1.69pp/+1.76pp at single-seed).
+  # See: experiments/auto_optimize_2026_05_03/variants/clamp_norm/DESIGN.md
+  # -------------------------------------------------------------------------
+  HybridPexV3MeshClampNorm:
+    description: "ClampNorm — norm-projection clamp (replaces element-wise)."
+    model:
+      module: src.models.hybrid_v3_mesh_clamp_norm
+      class:  HybridPexV3MeshClampNorm
+      kwargs:
+        cuboid_hidden: 64
+        cuboid_embed_dim: 64
+        cuboid_n_layers: 2
+        residual_hidden: 64
+        residual_n_hidden: 2
+    train: {}
+
+  # -------------------------------------------------------------------------
+  # InputSubset + ClampNorm — combined-stack candidate "best model".
+  # Stacks two architecturally orthogonal levers:
+  #   - InputSubset (input-side, shared encoder, gnd zeros ch{6,7,9})
+  #   - ClampNorm  (output-side, joint-norm projection on (delta_gnd, delta_cpl))
+  # Same param count (44,738), same curriculum, day-1 invariant preserved.
+  # See: experiments/auto_optimize_2026_05_03/variants/input_subset_clamp_norm/DESIGN.md
+  # -------------------------------------------------------------------------
+  HybridPexV3MeshInputSubsetClampNorm:
+    description: "InputSubset + ClampNorm — combined input-mask + joint-norm clamp."
+    model:
+      module: src.models.hybrid_v3_mesh_input_subset_clamp_norm
+      class:  HybridPexV3MeshInputSubsetClampNorm
+      kwargs:
+        cuboid_hidden: 64
+        cuboid_embed_dim: 64
+        cuboid_n_layers: 2
+        residual_hidden: 64
+        residual_n_hidden: 2
+        gnd_interaction_channels: [6, 7, 9]
+    train: {}
+
+  # -------------------------------------------------------------------------
+  # A2 placeholder — bounded-additive residual (drop multiplicative).
+  # gnd_pred = analytic_gnd + bounded_additive(...)
+  # -------------------------------------------------------------------------
+  HybridPexV3MeshAdditive:
+    description: "A2 — bounded-additive residual (replaces multiplicative)."
+    model:
+      module: src.models.hybrid_v3_mesh_additive
+      class:  HybridPexV3MeshAdditive
+      kwargs:
+        cuboid_hidden: 64
+        cuboid_embed_dim: 64
+        cuboid_n_layers: 2
+        residual_hidden: 64
+        residual_n_hidden: 2
+    train: {}
+
+  # -------------------------------------------------------------------------
+  # B1 placeholder — per-pair Sakurai analytic head.
+  # -------------------------------------------------------------------------
+  HybridPexV3MeshPerPair:
+    description: "B1 — per-pair Sakurai cpl head."
+    model:
+      module: src.models.hybrid_v3_perpair
+      class:  HybridPexV3PerPair
+      kwargs: {}
+    train: {}
+
+  # -------------------------------------------------------------------------
+  # C1 placeholder — CTS isotonic post-correction (eval-time, no training).
+  # The runner detects training=null → uses HybridPexV3Mesh weights and
+  # applies isotonic regression on top.
+  # -------------------------------------------------------------------------
+  HybridPexV3MeshCTSIso:
+    description: "C1 — CTS isotonic post-correction on top of HybridPexV3Mesh."
+    base_variant: HybridPexV3Mesh
+    model:
+      module: src.models.hybrid_v3_mesh_cts_iso
+      class:  HybridPexV3MeshCTSIso
+      kwargs: {}
+    train: null

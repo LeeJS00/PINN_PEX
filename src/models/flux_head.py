@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from src.models.compute_sheilding import compute_sparse_shield_factor
 
+
 class NeuralFluxRouter(nn.Module):
     def __init__(self, model_dim=128, context_radius=2, cutoff_radius=2, layer_map=None,
                  use_rail_coupling=False):
@@ -28,17 +29,13 @@ class NeuralFluxRouter(nn.Module):
             nn.GELU(),
             nn.Linear(64, 1)
         )
-        
+
         # ---------------------------------------------------------
         # [CPL MLP] Surface physics → coupling modifier + residual.
         # [FIX I] Pre-project Z-features to 32-dim edge space, then fuse with
-        # 9-channel normalized edge_geom (8 physics + 1 rank). Input dim drops
-        # from 788→105 (12× squeeze → 2× squeeze); hidden widened 64→256.
-        # [FIX I] Fresh cpl_mlp params; legacy ckpt cpl_mlp.* shapes mismatch
-        # and are filtered by run_active_learning.py's shape-filtered loader.
+        # 12-channel normalized edge_geom. Input dim 32·3 + 12 = 108.
         # ---------------------------------------------------------
         self.cpl_edge_proj = nn.Linear(Z_dim, 32)
-        # v10b: edge_geom 12 channels (lateral/broadside decomposition + d_lateral + P_over).
         CPL_IN = 32 * 3 + 12
         self.cpl_mlp = nn.Sequential(
             nn.LayerNorm(CPL_IN),
@@ -63,10 +60,13 @@ class NeuralFluxRouter(nn.Module):
         self.register_buffer('metal_z_anchors', metal_z)
         self.num_anchors = int(self.metal_z_anchors.numel())
         self.layer_scale_phys_gnd = nn.Parameter(self._make_gnd_cap_density_init())
-        # v10b: K×K symmetric layer-pair coupling scale replaces scalar phys_scale_cpl(K).
+        # K×K symmetric layer-pair coupling scale (replaces scalar phys_scale_cpl(K)).
         # Diagonal = same-layer correction; off-diagonal = cross-layer coupling bias.
-        # init=0 → softplus(0)=log(2)≈0.693; symmetry enforced at lookup time.
-        self.cpl_layer_pair_log_scale = nn.Parameter(torch.zeros(self.num_anchors, self.num_anchors))
+        # Init at zeros: softplus(0) ≈ 0.693 — neutral prior; cpl_modifier MLP
+        # carries the per-edge magnitude correction.
+        self.cpl_layer_pair_log_scale = nn.Parameter(
+            torch.zeros((self.num_anchors, self.num_anchors), dtype=torch.float32)
+        )
 
         # [Fix 2] Per-layer fringe/sidewall scale: learns how much sidewall area
         # contributes to GND cap. Thick upper metals (M7 2μm, M8 4.5μm) have
@@ -108,32 +108,14 @@ class NeuralFluxRouter(nn.Module):
         nn.init.zeros_(self.gnd_mlp[-1].bias)
         nn.init.zeros_(self.charge_basis_mlp[-1].bias)
         with torch.no_grad():
-            self.cpl_mlp[-1].bias.copy_(torch.tensor([-2.3026, -4.0]))
+            # v2 P4 init: cpl_modifier = exp(0) = 1.0; cpl_residual = softplus(-4)*0.01 ≈ 1.8e-4
+            self.cpl_mlp[-1].bias.copy_(torch.tensor([0.0, -4.0]))
 
     def _make_gnd_cap_density_init(self) -> torch.Tensor:
-        import math
-        z_anchors = self.metal_z_anchors.tolist()
-        def density_for_z(z: float) -> float:
-            # v6 re-calibration: chip_gnd=0.20 observed with effective=0.25 fF/um2.
-            # gnd_modifier converges to ~0.5 during training; raise density 5x so
-            # effective at convergence (density * 0.5) matches target ~1.25 fF/um2.
-            # All values 5x their v5b counterparts.
-            if z < 0.40:   return 2.50   # pre-M1  (was 0.50)
-            elif z < 0.60: return 2.50   # M1      (was 0.50)
-            elif z < 0.75: return 3.00   # M2      (was 0.60)
-            elif z < 0.90: return 3.00   # M3      (was 0.60)
-            elif z < 1.05: return 2.75   # M4      (was 0.55)
-            elif z < 1.20: return 2.75   # M5      (was 0.55)
-            elif z < 1.45: return 2.50   # M6      (was 0.50)
-            elif z < 4.50: return 1.50   # upper   (was 0.30)
-            elif z < 6.00: return 4.00   # top     (was 0.80)
-            else:           return 2.00  # others  (was 0.40)
-        inits = []
-        for z in z_anchors:
-            d = density_for_z(z)
-            x = math.log(math.exp(d) - 1.0)
-            inits.append(x)
-        return torch.tensor(inits, dtype=torch.float32)
+        # Uniform softplus_inv(0.0) ≡ zeros init. softplus(0) ≈ 0.693 fF/μm² is
+        # the neutral prior; gnd_modifier MLP carries per-layer magnitude
+        # correction (exp(clamp(-3, 3)) ≈ [0.05, 20.1] gain range).
+        return torch.zeros(int(self.metal_z_anchors.numel()), dtype=torch.float32)
 
     def _make_gnd_fringe_scale_init(self) -> torch.Tensor:
         """Physics-based per-layer fringe_frac initialization.
@@ -229,6 +211,8 @@ class NeuralFluxRouter(nn.Module):
         # Node Embedding 완성
         Z_prime = self.norm(torch.cat([features, analytical_density, ambient_potential, self_potential, segment_ratio], dim=-1))
 
+        feat_dtype = features.dtype
+
         # BEM charge basis — only computed in SSL forward (compute_coupling=False).
         # q_raw: signed charge per target cuboid; equiv_radius: self-distance floor (μm).
         if not compute_coupling:
@@ -260,8 +244,6 @@ class NeuralFluxRouter(nn.Module):
 
         # n_tiles conditioning: log-scale tile count (wire length proxy) + endpoint proximity.
         # Defaults to zeros (neutral) when n_tiles/endpoint_prox not supplied (SSL, selector).
-        # Cast to features.dtype so cat with Z_prime doesn't fail under bfloat16 autocast.
-        feat_dtype = features.dtype
         if n_tiles is not None:
             log_n = torch.log1p(n_tiles.to(feat_dtype)).view(B, 1, 1).expand(B, N, 1)
         else:
@@ -469,13 +451,13 @@ class NeuralFluxRouter(nn.Module):
             # Normalize mixed-scale channels before MLP fusion.
             edge_geom = self.edge_geom_norm(edge_geom)
 
-            Z_i, Z_j = Z_prime[b_e, src_e], Z_prime[b_e, dst_e]
-            # Pre-project to 32-dim edge space; cpl_mlp input is
-            # 32·3 + 12 = 108.
-            Z_i_e, Z_j_e = self.cpl_edge_proj(Z_i), self.cpl_edge_proj(Z_j)
+            # Pre-project to 32-dim edge space; cpl_mlp input is 32·3 + 12.
+            Z_i_e = self.cpl_edge_proj(Z_prime[b_e, src_e])
+            Z_j_e = self.cpl_edge_proj(Z_prime[b_e, dst_e])
 
             cpl_logits = self.cpl_mlp(
-                torch.cat([Z_i_e + Z_j_e, Z_i_e * Z_j_e, torch.abs(Z_i_e - Z_j_e), edge_geom], dim=-1)
+                torch.cat([Z_i_e + Z_j_e, Z_i_e * Z_j_e, torch.abs(Z_i_e - Z_j_e),
+                           edge_geom], dim=-1)
             )
             logit_mult = cpl_logits[:, 0]
             logit_add = cpl_logits[:, 1]
@@ -488,15 +470,20 @@ class NeuralFluxRouter(nn.Module):
             sym_lp = (self.cpl_layer_pair_log_scale + self.cpl_layer_pair_log_scale.T) / 2.0
             phys_scale_cpl = F.softplus(sym_lp[z_idx_src_cpl, z_idx_dst_cpl])
             
-            # Modifier (상한선을 풀어주어 다이나믹 레인지 확보)
-            cpl_modifier = torch.sigmoid(logit_mult) * 9.9 + 0.1
-            
-            # [FIX C] Gate residual by the physics baseline so it cannot dominate
-            # on long-perimeter nets (the prior P_over·0.1 gate made residual grow
-            # with wire length independent of w_cpl_base, which softplus gradients
-            # exploit → long-net MAPE blowup). Residual is now ≤ ~0.3·w_cpl_base
-            # across softplus's useful range.
-            cpl_residual = F.softplus(logit_add) * torch.clamp(w_cpl_base, min=1e-9) * 0.1
+            # v2 P4: replace saturating sigmoid×9.9+0.1 with exp(clamp). The old
+            # gate ranges [0.1, 10.0] but saturates near both ends — when w_cpl_base
+            # is much smaller than the true coupling, even a 10× modifier cannot
+            # bring the prediction up. exp(clamp(-3, 3)) gives the same [0.05, 20.1]
+            # range without the sigmoid plateau, so the head can scale the physics
+            # base over a 4-decade range without saturation pressure.
+            cpl_modifier = torch.exp(torch.clamp(logit_mult, min=-3.0, max=3.0))
+
+            # v2 P4: residual is now decoupled from w_cpl_base. The old gating made
+            # the residual grow with the physics baseline, preventing it from
+            # filling the gap when the baseline was wrong. Use a small absolute
+            # softplus floor (~1e-3 fF) so it's only meaningful when the model
+            # genuinely needs additive correction.
+            cpl_residual = F.softplus(logit_add) * 0.01
             
             # [최종 커플링 도출]
             c_cpl_E = (w_cpl_base * phys_scale_cpl * cpl_modifier) + cpl_residual

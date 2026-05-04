@@ -1,0 +1,11 @@
+{
+  "index_pass_s": 10.709583441959694,
+  "kdtree_build_s": 0.027217978844419122,
+  "spef_write_s": 19.102120587136596,
+  "nets_written": 3380,
+  "nets_skipped": 0,
+  "nets_total": 3380,
+  "n_workers_pass2": 16,
+  "chunksize_pass2": 52,
+  "wall_clock_s": 29.85064746881835
+}

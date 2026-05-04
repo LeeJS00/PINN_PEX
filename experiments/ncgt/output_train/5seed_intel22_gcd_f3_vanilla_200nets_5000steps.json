@@ -1,0 +1,95 @@
+{
+  "config": {
+    "mode": "train",
+    "design": "intel22_gcd_f3",
+    "n_nets": 200,
+    "steps": 5000,
+    "lr": 0.0005,
+    "r_aggr": 12.0,
+    "max_aggr": 2000,
+    "max_target": 1000,
+    "min_segs": 5,
+    "gpu": 0,
+    "seed": 0,
+    "gate": 0.1,
+    "log_interval": 50,
+    "eval_interval": 1000,
+    "use_bins": false,
+    "use_aug": false,
+    "multi_design": false,
+    "n_seeds": 5
+  },
+  "physics_valid": {
+    "n": 40,
+    "gnd_mape_mean": 0.4754664935666476,
+    "cpl_mape_mean": 0.6282869380759584,
+    "tot_mape_mean": 0.43682545573003306,
+    "tot_mape_median": 0.46782652236721306,
+    "tot_mape_p95": 0.6832095529277719,
+    "pearson_r_total": 0.9465562019848458
+  },
+  "init_valid": {
+    "n": 40,
+    "gnd_mape_mean": 0.4754664935666476,
+    "cpl_mape_mean": 0.6282869380759584,
+    "tot_mape_mean": 0.43682545573003306,
+    "tot_mape_median": 0.46782652236721306,
+    "tot_mape_p95": 0.6832095529277719,
+    "pearson_r_total": 0.9465562019848458
+  },
+  "n_designs": 1,
+  "n_train": 160,
+  "n_valid": 40,
+  "seed_results": [
+    {
+      "seed": 0,
+      "best_valid": 0.15020422232356798,
+      "best_step": 3000,
+      "final_valid": 0.15472326944942547,
+      "final_pearson": 0.970606010412546,
+      "final_p95": 0.3579449420324312
+    },
+    {
+      "seed": 1,
+      "best_valid": 0.1523494563251,
+      "best_step": 2000,
+      "final_valid": 0.17307992478754503,
+      "final_pearson": 0.9576204582049623,
+      "final_p95": 0.37959433835381284
+    },
+    {
+      "seed": 2,
+      "best_valid": 0.16110112725518205,
+      "best_step": 3000,
+      "final_valid": 0.17759132458532453,
+      "final_pearson": 0.9681954972994608,
+      "final_p95": 0.364589124135762
+    },
+    {
+      "seed": 3,
+      "best_valid": 0.15969699541591026,
+      "best_step": 3000,
+      "final_valid": 0.167252610951771,
+      "final_pearson": 0.9618747867238716,
+      "final_p95": 0.3647787179001166
+    },
+    {
+      "seed": 4,
+      "best_valid": 0.19044651566880114,
+      "best_step": 3000,
+      "final_valid": 0.19750492689090093,
+      "final_pearson": 0.9347507564865147,
+      "final_p95": 0.3762488747689642
+    }
+  ],
+  "summary": {
+    "best_valid_mean": 0.16275966339771228,
+    "best_valid_std": 0.014454784521707054,
+    "best_valid_min": 0.15020422232356798,
+    "best_valid_max": 0.19044651566880114,
+    "final_valid_mean": 0.1740304113329934,
+    "final_valid_std": 0.01402384194336253,
+    "final_p95_mean": 0.36863119943821737,
+    "pearson_r_mean": 0.9586095018254712
+  }
+}

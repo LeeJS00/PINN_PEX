@@ -1,0 +1,51 @@
+{
+  "split": "canonical (configs/config.py)",
+  "DESIGNS_TRAIN": [
+    "intel22_aes_cipher_top_f3",
+    "intel22_gcd_f3",
+    "intel22_ibex_core_f3",
+    "intel22_ldpc_decoder_802_3an_f3",
+    "intel22_mc_top_f3",
+    "intel22_spi_top_f3",
+    "intel22_usbf_top_f3",
+    "intel22_vga_enh_top_f3",
+    "intel22_wb_conmax_top_f3"
+  ],
+  "DESIGNS_TEST": [
+    "intel22_nova_f3",
+    "intel22_tv80s_f3"
+  ],
+  "stage_A_prior_coefs": {
+    "1": 0.3,
+    "2": 0.3,
+    "3": 0.3,
+    "4": 0.3,
+    "5": 0.3,
+    "6": 0.2,
+    "7": 0.1,
+    "8": 0.05,
+    "9": 0.03
+  },
+  "stage_B_NNLS_coefs": {
+    "n_pin_PIN": 0.0,
+    "n_pin_inst": 0.0,
+    "nsq_M2": 0.00597569890269426,
+    "nsq_M3": 0.0035710922946992404,
+    "nsq_M4": 0.0020513497129204827,
+    "nsq_M5": 0.002787534001687073,
+    "one": 0.0,
+    "rsq_M2": 0.0003259366157838808,
+    "rsq_M3": 0.00451972319273638,
+    "rsq_M4": 0.04859865317424598,
+    "v6_cell_area_sum": 0.0,
+    "v6_obs_signal_area_M1": 0.06568934756010514,
+    "v6_obs_signal_area_M2": 1.859788011423211e-07,
+    "v6_obs_signal_nsq_M1": 0.0,
+    "v6_obs_signal_nsq_M2": 9.60634303288385e-05
+  },
+  "stage_B_test_MAPE_combined": 31.11554442896197,
+  "stage_C_test_MAPE_combined": 23.920175977104,
+  "best_val_MAPE": 24.606335163116455,
+  "n_epochs": 200,
+  "feat_dim": 34
+}

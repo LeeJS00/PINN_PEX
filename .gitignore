@@ -1,33 +1,75 @@
-# Model checkpoints and outputs
+# =============================================================================
+# PINN-PEX .gitignore — track CODE, ignore LARGE OUTPUTS / DATA / TOOL ASSETS
+# =============================================================================
+
+# ---- Large outputs (regenerable from code + manifests) ----
 output_intel22/
+output/
+pex_v3/output/
+pex_v3/joint_pareto/experiments/exp_*/output/
+pex_v3/joint_pareto/experiments/exp_*/results/
+pex_v3/joint_pareto/results/
+pex_v3/experiments/*/output/
+experiments/*/cache/
+experiments/*/output/
+experiments/*/logs/
+experiments/*/catboost_info/
+experiments/*/r_analytic_v3/output/
+experiments/*/r_analytic_v3/cache/
+experiments/*/r_analytic_v3/results/
+
+# ---- Big binaries from individual experiments ----
 *.pth
 *.pth.buggy_*
-
-# Processed data (large binary/compressed)
-data/processed/
-*.pkl.gz
 *.pkl
+*.pkl.gz
+*.parquet
+*.spef
+*.spef.gz
+*.npz
+*.npy
 
-# Golden data (large SPEFs)
+# ---- Large derived CSVs from per-design SPEF/DEF dumps ----
+experiments/*/reports/sheet_r_*.csv
+experiments/*/reports/def_via_counts_*.csv
+experiments/*/reports/sheet_r_*.csv.gz
+pex_v3/joint_pareto/experiments/*/stacker_predictions_*.csv
+pex_v3/joint_pareto/experiments/*/*_predictions_*.csv
+
+# ---- catboost training scratch ----
+catboost_info/
+**/catboost_info/
+
+# ---- Processed data + golden data (handled outside repo) ----
+data/processed/
 golden_data/
 
-# Python
+# ---- Python machinery ----
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 
-# Logs and temporaries
+# ---- Logs & temporaries ----
 *.log
 *.tmp
+.pytest_cache/
 
-# Analysis CSV outputs (can be regenerated)
+# ---- Analysis CSV outputs (regenerable; whitelist tables explicitly) ----
 analysis/*/
 
-# Claude Code local settings (contains secrets)
-.claude/settings.local.json
-.claude/
-.codex
-*plan.md
+# ---- Tool assets (project-local PnR; never commit binaries) ----
 /tool/
+
+# ---- External baseline mirrors (re-clonable) ----
+previous_works/
+
+# ---- Claude Code local state (contains secrets / per-machine settings) ----
+.claude/settings.local.json
+.codex
+
+# ---- Stale legacy plans (kept on disk, but not in repo) ----
+ultraplan.md
+gpu_pex_plan.md
+v4_*.log

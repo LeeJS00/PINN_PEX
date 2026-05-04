@@ -1,0 +1,134 @@
+{
+  "seed": 42,
+  "variant": "HybridPexV3MeshClampNorm",
+  "n_epochs": 200,
+  "model_params": {
+    "cuboid_encoder": 9024,
+    "gnd_residual": 17601,
+    "cpl_residual": 18113,
+    "total": 44738
+  },
+  "elapsed_train_sec": 889.8007502555847,
+  "calibration": "per_layer",
+  "before_valid": {
+    "median_ratio_gnd": 0.347015175665579,
+    "p5_ratio_gnd": 0.17772107608312254,
+    "p95_ratio_gnd": 0.9358872918337412,
+    "iqr_ratio_gnd": 0.24462763107370844,
+    "median_ratio_cpl": 1.8096407265393504,
+    "p5_ratio_cpl": 0.767284040121933,
+    "p95_ratio_cpl": 4.382390767095335,
+    "iqr_ratio_cpl": 1.1954952740898945
+  },
+  "after_valid": {
+    "median_ratio_gnd": 1.0055528096252149,
+    "p5_ratio_gnd": 0.6041880960072619,
+    "p95_ratio_gnd": 2.713243299493399,
+    "iqr_ratio_gnd": 0.7089519957658257,
+    "median_ratio_cpl": 1.0069646287209606,
+    "p5_ratio_cpl": 0.4283422996254886,
+    "p95_ratio_cpl": 2.4212681136751404,
+    "iqr_ratio_cpl": 0.6669959872608663
+  },
+  "day1_valid": {
+    "gnd_mape_median": 0.29089251160621643,
+    "gnd_mape_mean": 0.5181713104248047,
+    "cpl_mape_median": 0.3107297718524933,
+    "cpl_mape_mean": 0.44909554719924927,
+    "total_mape_median": 0.2068929523229599,
+    "total_mape_mean": 0.2867680490016937,
+    "n_nets": 12594
+  },
+  "final_valid": {
+    "gnd_mape_median": 0.18787284195423126,
+    "gnd_mape_mean": 0.24203193187713623,
+    "cpl_mape_median": 0.1263161599636078,
+    "cpl_mape_mean": 0.1628664880990982,
+    "total_mape_median": 0.06662081182003021,
+    "total_mape_mean": 0.08298169821500778,
+    "n_nets": 12594
+  },
+  "final_test": {
+    "gnd_mape_median": 0.20889829099178314,
+    "gnd_mape_mean": 0.24769960343837738,
+    "cpl_mape_median": 0.15215763449668884,
+    "cpl_mape_mean": 0.20923927426338196,
+    "total_mape_median": 0.07362046837806702,
+    "total_mape_mean": 0.08995281159877777,
+    "n_nets": 95594
+  },
+  "best_epoch": 158,
+  "best_valid_total_mape": 0.0630090981721878,
+  "best_valid_gnd_mape": 0.19079917669296265,
+  "best_valid_cpl_mape": 0.12730416655540466,
+  "transition_log": {
+    "49": {
+      "valid_total_mape": 0.10012070834636688,
+      "valid_gnd_mape": 0.2326257824897766,
+      "valid_cpl_mape": 0.17022494971752167,
+      "clamp": 0.4054651081081644
+    },
+    "50": {
+      "valid_total_mape": 0.0940701812505722,
+      "valid_gnd_mape": 0.21521404385566711,
+      "valid_cpl_mape": 0.1426021009683609,
+      "clamp": 0.9162907318741551
+    },
+    "51": {
+      "valid_total_mape": 0.09447532147169113,
+      "valid_gnd_mape": 0.211818128824234,
+      "valid_cpl_mape": 0.14577174186706543,
+      "clamp": 0.9162907318741551
+    },
+    "52": {
+      "valid_total_mape": 0.09688018262386322,
+      "valid_gnd_mape": 0.21670396625995636,
+      "valid_cpl_mape": 0.15032485127449036,
+      "clamp": 0.9162907318741551
+    },
+    "149": {
+      "valid_total_mape": 0.07545963674783707,
+      "valid_gnd_mape": 0.21199682354927063,
+      "valid_cpl_mape": 0.13586553931236267,
+      "clamp": 0.9162907318741551
+    },
+    "150": {
+      "valid_total_mape": 0.06589793413877487,
+      "valid_gnd_mape": 0.20193929970264435,
+      "valid_cpl_mape": 0.1382988840341568,
+      "clamp": 1.3862943611198906
+    },
+    "151": {
+      "valid_total_mape": 0.09300338476896286,
+      "valid_gnd_mape": 0.19564761221408844,
+      "valid_cpl_mape": 0.13363951444625854,
+      "clamp": 1.3862943611198906
+    },
+    "152": {
+      "valid_total_mape": 0.07200870662927628,
+      "valid_gnd_mape": 0.1980655938386917,
+      "valid_cpl_mape": 0.13120310008525848,
+      "clamp": 1.3862943611198906
+    }
+  },
+  "transition_gain_50_pp": 0.003240525722503662,
+  "transition_gain_150_pp": 0.003450930118560791,
+  "phase2_max_abs_delta": 0.03452973812818527,
+  "phase2_mean_abs_delta": 0.011815814822912217,
+  "verdict": "FAIL",
+  "decision_gate": {
+    "pass_any": false,
+    "no_regression": true,
+    "transitions_preserved": true,
+    "thresholds": {
+      "gnd": 0.195,
+      "cpl": 0.145,
+      "total": 0.0727
+    },
+    "baseline": {
+      "gnd": 0.2049,
+      "cpl": 0.1553,
+      "total": 0.0827
+    }
+  }
+}

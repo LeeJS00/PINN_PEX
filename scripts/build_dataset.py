@@ -1,4 +1,5 @@
 # scripts/build_dataset.py
+import os
 import sys
 import argparse
 import numpy as np
@@ -525,7 +526,11 @@ def main():
     print(">>> [3/4] Generating Jobs...")
     halo_margin = 1.5
     tiler = NetTiler(cfg.WINDOW_SIZE, 2.0 * halo_margin) # Stride = Window - 2*Margin
-    context_margin = 2.0
+    # H3 fix (Strategy v3): allow env var override of legacy 2.0 μm hardcode.
+    # Default preserves legacy behavior; pex_v3/scripts/02_rebuild_dataset_h3.py
+    # sets PEX_CONTEXT_MARGIN=5.0 to capture 4 μm cutoff_radius coupling.
+    # See pex_v3/docs/CROSS_BOUNDARY_h3_context_margin.md.
+    context_margin = float(os.environ.get('PEX_CONTEXT_MARGIN', '2.0'))
     context_size = np.array([cfg.WINDOW_SIZE[0]+2*context_margin, cfg.WINDOW_SIZE[1]+2*context_margin, cfg.WINDOW_SIZE[2]])
     win_size = np.array(cfg.WINDOW_SIZE)
     

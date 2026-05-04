@@ -1,0 +1,181 @@
+{
+  "metal_per_layer": [
+    {
+      "lvl": 5,
+      "name": "m5",
+      "n": 31376,
+      "sheet_median": 0.5873214043209876,
+      "sheet_mean": 0.5863781187433347,
+      "p5": 0.5358883199999999,
+      "p95": 0.6551811199999998
+    },
+    {
+      "lvl": 6,
+      "name": "m4",
+      "n": 122139,
+      "sheet_median": 0.6000473599999999,
+      "sheet_mean": 0.6029677694778229,
+      "p5": 0.5358898834880556,
+      "p95": 0.6551811199999998
+    },
+    {
+      "lvl": 7,
+      "name": "m3",
+      "n": 308370,
+      "sheet_median": 0.6000473599999999,
+      "sheet_mean": 0.6025931930333396,
+      "p5": 0.5299395199999999,
+      "p95": 0.6551811199999998
+    },
+    {
+      "lvl": 8,
+      "name": "m2",
+      "n": 482193,
+      "sheet_median": 0.582824,
+      "sheet_mean": 0.5805825269643557,
+      "p5": 0.529892,
+      "p95": 0.6551811538461538
+    },
+    {
+      "lvl": 9,
+      "name": "m1",
+      "n": 310246,
+      "sheet_median": 0.713138328358209,
+      "sheet_mean": 0.7245167365908762,
+      "p5": 0.7131380891719745,
+      "p95": 0.9431807407407405
+    }
+  ],
+  "via_per_lvl_vc": [
+    {
+      "lvl": 10,
+      "name": "v1",
+      "vc": 4,
+      "n": 7892,
+      "R_median": 13.8972,
+      "R_mean": 13.8972
+    },
+    {
+      "lvl": 10,
+      "name": "v1",
+      "vc": 8,
+      "n": 214,
+      "R_median": 12.9046,
+      "R_mean": 12.904599999999999
+    },
+    {
+      "lvl": 10,
+      "name": "v1",
+      "vc": 12,
+      "n": 132540,
+      "R_median": 11.6141,
+      "R_mean": 11.614100000000006
+    },
+    {
+      "lvl": 11,
+      "name": "v2",
+      "vc": 8,
+      "n": 139901,
+      "R_median": 13.0685,
+      "R_mean": 13.0685
+    },
+    {
+      "lvl": 12,
+      "name": "v3",
+      "vc": 8,
+      "n": 60833,
+      "R_median": 13.0685,
+      "R_mean": 13.0685
+    },
+    {
+      "lvl": 13,
+      "name": "v4",
+      "vc": 8,
+      "n": 18349,
+      "R_median": 13.0685,
+      "R_mean": 13.0685
+    }
+  ],
+  "via_per_layer": [
+    {
+      "lvl": 10,
+      "name": "v1",
+      "n": 140646,
+      "R_median": 11.6141,
+      "R_mean": 11.744174031255785
+    },
+    {
+      "lvl": 11,
+      "name": "v2",
+      "n": 139901,
+      "R_median": 13.0685,
+      "R_mean": 13.0685
+    },
+    {
+      "lvl": 12,
+      "name": "v3",
+      "n": 60833,
+      "R_median": 13.0685,
+      "R_mean": 13.0685
+    },
+    {
+      "lvl": 13,
+      "name": "v4",
+      "n": 18349,
+      "R_median": 13.0685,
+      "R_mean": 13.0685
+    }
+  ],
+  "per_design_counts": [
+    {
+      "design": "intel22_aes_cipher_top_f3_starrc.spef",
+      "n_metal": 106315,
+      "n_via": 30496
+    },
+    {
+      "design": "intel22_gcd_f3_starrc.spef",
+      "n_metal": 6955,
+      "n_via": 1809
+    },
+    {
+      "design": "intel22_ibex_core_f3_starrc.spef",
+      "n_metal": 149190,
+      "n_via": 43252
+    },
+    {
+      "design": "intel22_mc_top_f3_starrc.spef",
+      "n_metal": 93154,
+      "n_via": 25885
+    },
+    {
+      "design": "intel22_spi_top_f3_starrc.spef",
+      "n_metal": 58331,
+      "n_via": 16946
+    },
+    {
+      "design": "intel22_usbf_top_f3_starrc.spef",
+      "n_metal": 105504,
+      "n_via": 29927
+    },
+    {
+      "design": "intel22_vga_enh_top_f3_starrc.spef",
+      "n_metal": 258835,
+      "n_via": 72601
+    },
+    {
+      "design": "intel22_wb_conmax_top_f3_starrc.spef",
+      "n_metal": 245797,
+      "n_via": 69779
+    },
+    {
+      "design": "intel22_nova_f3_starrc.spef",
+      "n_metal": 230243,
+      "n_via": 69034
+    },
+    {
+      "design": "intel22_tv80s_f3_starrc.spef",
+      "n_metal": 96368,
+      "n_via": 27480
+    }
+  ]
+}

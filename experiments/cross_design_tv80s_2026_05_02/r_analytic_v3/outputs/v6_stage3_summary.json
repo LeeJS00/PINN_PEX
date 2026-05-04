@@ -1,0 +1,9 @@
+{
+  "final_test_MAPE": 2.2091585363316906,
+  "final_median": 1.401253327313241,
+  "final_p90": 4.877673433570093,
+  "stage1_test_MAPE": 3.3036001958674754,
+  "stage2_test_MAPE": 2.2466701096360913,
+  "n_seeds_s2": 5,
+  "n_seeds_s3": 3
+}

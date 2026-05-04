@@ -1,0 +1,87 @@
+{
+  "_schema": "joint_pareto.measurement.v1",
+  "variant_id": "v9_mesh_ratio",
+  "label": "Path-2 v9 = v7 parallel + Mesh-ratio per-channel calibration",
+  "design": "intel22_tv80s_f3",
+  "n_seeds": 5,
+  "wall_clock_s": 43.65,
+  "wall_clock_breakdown": {
+    "autonomous_v7_parallel_s": 38.09,
+    "xgb_calibrate_s": 2.26,
+    "mesh_ratio_calibrate_s": 1.64,
+    "sister_r_calibrate_s": 1.65,
+    "note": "measured 5-seed end-to-end (exp_009/timing_5seed.json) under concurrent nova background workload; standalone exp_006 v7 autonomous was 27.77s, so standalone v9 \u2248 33s"
+  },
+  "wall_clock_per_seed_estimate": [
+    29.91,
+    30.0,
+    30.07,
+    31.68,
+    30.93
+  ],
+  "mean_of_mean_mape": 7.035,
+  "stdev_of_mean_mape": 0.045,
+  "mean_of_median_mape": 5.441,
+  "stdev_of_median_mape": 0.052,
+  "mean_of_p95_mape": 18.544,
+  "stdev_of_p95_mape": 0.352,
+  "gnd_matched_mean": 23.399,
+  "gnd_matched_stdev": 0.09,
+  "cpl_matched_mean": 18.354,
+  "cpl_matched_stdev": 0.038,
+  "r_squared_c": 0.9933,
+  "r_squared_c_stdev": 0.00018,
+  "r_mape_mean": 2.21,
+  "r_squared_r": 0.9991,
+  "method_summary": "Step 1 generate autonomous SPEF via v7 parallel pass-2 (16 workers). Step 2 apply XGB anchor (per-net total exact). Step 3 NEW: apply Mesh-PINN ensemble per-channel ratio override \u2014 per matched net, multiply gnd entries by (mesh_ratio_gnd / xgb_ratio_gnd) and cpl entries by symmetric factor so XGB total preserved while gnd/cpl split follows Mesh. Step 4 sister R per-net rescale.",
+  "per_seed": [
+    {
+      "seed": 0,
+      "tot_mape_mean": 7.0447,
+      "tot_mape_median": 5.3968,
+      "tot_mape_p95": 18.849,
+      "gnd_matched_mean": 23.4411,
+      "cpl_matched_mean": 18.4019
+    },
+    {
+      "seed": 1,
+      "tot_mape_mean": 7.0541,
+      "tot_mape_median": 5.4844,
+      "tot_mape_p95": 18.8552,
+      "gnd_matched_mean": 23.4103,
+      "cpl_matched_mean": 18.3123
+    },
+    {
+      "seed": 2,
+      "tot_mape_mean": 7.0652,
+      "tot_mape_median": 5.4796,
+      "tot_mape_p95": 18.3318,
+      "gnd_matched_mean": 23.4376,
+      "cpl_matched_mean": 18.3266
+    },
+    {
+      "seed": 3,
+      "tot_mape_mean": 6.956,
+      "tot_mape_median": 5.3731,
+      "tot_mape_p95": 18.0443,
+      "gnd_matched_mean": 23.2423,
+      "cpl_matched_mean": 18.3829
+    },
+    {
+      "seed": 4,
+      "tot_mape_mean": 7.0567,
+      "tot_mape_median": 5.469,
+      "tot_mape_p95": 18.642,
+      "gnd_matched_mean": 23.465,
+      "cpl_matched_mean": 18.3453
+    }
+  ],
+  "wall_clock_s_stdev": 0.6,
+  "wall_clock_per_seed": [
+    43.19,
+    43.01,
+    44.04,
+    44.45,
+    43.57
+  ]
+}

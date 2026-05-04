@@ -1,0 +1,92 @@
+{
+  "seed": 42,
+  "n_epochs": 200,
+  "model_class": "HybridPexV3MeshInputSubset",
+  "model_params": {
+    "cuboid_encoder": 9024,
+    "gnd_residual": 17601,
+    "cpl_residual": 18113,
+    "total": 44738
+  },
+  "elapsed_train_sec": 1174.3833808898926,
+  "gnd_interaction_channels": [
+    6,
+    7,
+    9
+  ],
+  "calibration": "per_layer",
+  "before_valid": {
+    "median_ratio_gnd": 0.347015175665579,
+    "p5_ratio_gnd": 0.17772107608312254,
+    "p95_ratio_gnd": 0.9358872918337412,
+    "iqr_ratio_gnd": 0.24462763107370844,
+    "median_ratio_cpl": 1.8096407265393504,
+    "p5_ratio_cpl": 0.767284040121933,
+    "p95_ratio_cpl": 4.382390767095335,
+    "iqr_ratio_cpl": 1.1954952740898945
+  },
+  "after_valid": {
+    "median_ratio_gnd": 1.0055528096252149,
+    "p5_ratio_gnd": 0.6041880960072619,
+    "p95_ratio_gnd": 2.713243299493399,
+    "iqr_ratio_gnd": 0.7089519957658257,
+    "median_ratio_cpl": 1.0069646287209606,
+    "p5_ratio_cpl": 0.4283422996254886,
+    "p95_ratio_cpl": 2.4212681136751404,
+    "iqr_ratio_cpl": 0.6669959872608663
+  },
+  "day1_valid": {
+    "gnd_mape_median": 0.29089251160621643,
+    "gnd_mape_mean": 0.5181713104248047,
+    "cpl_mape_median": 0.3107297718524933,
+    "cpl_mape_mean": 0.44909554719924927,
+    "total_mape_median": 0.2068929523229599,
+    "total_mape_mean": 0.2867680490016937,
+    "n_nets": 12594
+  },
+  "final_valid": {
+    "gnd_mape_median": 0.1879003345966339,
+    "gnd_mape_mean": 0.2412465363740921,
+    "cpl_mape_median": 0.12547005712985992,
+    "cpl_mape_mean": 0.16094985604286194,
+    "total_mape_median": 0.07301953434944153,
+    "total_mape_mean": 0.08662044256925583,
+    "n_nets": 12594
+  },
+  "final_test": {
+    "gnd_mape_median": 0.19051547348499298,
+    "gnd_mape_mean": 0.23870454728603363,
+    "cpl_mape_median": 0.1502312272787094,
+    "cpl_mape_mean": 0.2084984928369522,
+    "total_mape_median": 0.07219553738832474,
+    "total_mape_mean": 0.08705656975507736,
+    "n_nets": 95594
+  },
+  "best_epoch": 175,
+  "best_valid_total_mape": 0.06020379066467285,
+  "best_valid_gnd_mape": 0.1922188550233841,
+  "best_valid_cpl_mape": 0.12658031284809113,
+  "verdict": "PASS \u2014 InputSubset smoke beats baseline on: gnd 19.05% \u2264 19.5%, total 7.22% \u2264 7.27%. No metric regresses > 0.5pp. Recommend 5-seed lock.",
+  "smoke_pass": true,
+  "kill_criterion": {
+    "test_gnd": 0.19051547348499298,
+    "test_cpl": 0.1502312272787094,
+    "test_total": 0.07219553738832474,
+    "gnd_threshold": 0.195,
+    "cpl_threshold": 0.145,
+    "total_threshold": 0.0727,
+    "regression_tol": 0.005,
+    "gnd_pass": true,
+    "cpl_pass": false,
+    "total_pass": true,
+    "any_pass": true,
+    "gnd_regression": false,
+    "cpl_regression": false,
+    "total_regression": false,
+    "any_regression": false,
+    "smoke_pass": true,
+    "baseline_test_gnd": 0.2049,
+    "baseline_test_cpl": 0.1553,
+    "baseline_test_total": 0.0827
+  }
+}
