@@ -1,5 +1,7 @@
 # Implementation Status — Stub vs Implemented
 
+> **PARTIALLY STALE (2026-05-05)**: Snapshot from 2026-05-01. Current truth source for active workspace status: `pex_v3/PHASE_STATUS.md` + `pex_v3/SESSION_HANDOFF.md`. This file remains useful as the historical "what was a stub" honesty register.
+
 _Updated: 2026-05-01_
 
 This file is the **honesty register**: what's actually working end-to-end vs

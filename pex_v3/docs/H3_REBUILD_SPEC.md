@@ -1,5 +1,7 @@
 # H3 Rebuild Specification
 
+> **DEPRECATED (2026-05-05)**: H3 rebuild complete (1,322,115 tiles · 257,438 nets · 11/11 designs · 493 GB at `/data/PINNPEX/data/processed_v3/intel22/`). See `pex_v3/PHASE_STATUS.md`. Kept for spec history.
+
 _Status: design — implementation gated by user --confirm_
 
 ## Why

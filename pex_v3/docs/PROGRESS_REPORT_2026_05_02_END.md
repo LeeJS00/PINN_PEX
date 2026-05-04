@@ -1,5 +1,7 @@
 # Progress Report — End of 2026-05-02 session
 
+> **HISTORICAL (2026-05-05)**: Session-bound report. Current state lives in `pex_v3/SESSION_HANDOFF.md` and `RESULTS.md`. Kept for narrative.
+
 _Compiled after Phase 1 Tier 3 ceiling finding_
 _Total session compute: ~30 GPU-hours_
 _Total tests: 170 passing_

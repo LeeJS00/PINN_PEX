@@ -235,10 +235,15 @@ These are recorded so neither the user nor a future agent re-runs them. Each ent
 
 ## 6. POINTERS
 
+**Read `NAVIGATION.md` (root) first** — it is the single doc map for this repo, organized in tiers from "first 5 min" to "historical archive". The most important pointers are repeated below for convenience:
+
 - **Canonical leaderboard (all runs as a single table)**: `RESULTS.md` ← read this when you need numbers
 - Deep narrative + 12-section history: `docs/PROJECT_REPORT.md`
 - Pipeline definition: `PEX_FRAMEWORK.md`
-- Paper drafts: `pex_v3/paper/{METHOD,RESULTS_CONSOLIDATED,OUTLINE}.md`
+- Most recent session state: `pex_v3/SESSION_HANDOFF.md`
+- Live phase tracker: `pex_v3/PHASE_STATUS.md`
+- Paper drafts: `pex_v3/paper/{METHOD,RESULTS_CONSOLIDATED,OUTLINE,EXPERIMENTS}.md`
+- Live joint Pareto frontier: `pex_v3/joint_pareto/PARETO.md`
 - Latest hero report: `pex_v3/experiments/auto_optimize_2026_05_03/HERO.md`
-- Joint Pareto leaderboard + agents: `pex_v3/joint_pareto/`
+- Next-session structural plan (external workspace): `/data/PINNPEX/joint_pareto_workspace/NEXT_SESSION_STRUCTURAL_PLAN.md`
 - Memory index (auto-loaded): `~/.claude/projects/-home-jslee-projects-PINNPEX/memory/MEMORY.md`

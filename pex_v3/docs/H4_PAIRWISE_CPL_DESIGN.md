@@ -1,5 +1,7 @@
 # H4 Pairwise CPL Search — Design
 
+> **DEPRECATED (2026-05-05)**: H4 design landed; per-pair CPL is now exercised by `pex_v3/joint_pareto/experiments/exp_013_per_pair/` (verdict.md: 4.5× per-pair improvement, NOT admitted to frontier). Kept for original design rationale.
+
 _Status: design — implementation deferred to Phase 1_
 
 ## Why H4 is deferred

@@ -1,5 +1,7 @@
 # Phase 0 Plan — Foundation rebuild
 
+> **DEPRECATED (2026-05-05)**: Phase 0 complete. Current state: `pex_v3/PHASE_STATUS.md`. Outcome (H1 net-level split + H2 priority truncation + H3 1.3M-tile rebuild + H4 pairwise CPL spec) is summarized in `RESULTS.md` §1 / `docs/PROJECT_REPORT.md` §13. Kept for design rationale.
+
 _Status: in progress (started 2026-05-01)_
 
 ## Goal

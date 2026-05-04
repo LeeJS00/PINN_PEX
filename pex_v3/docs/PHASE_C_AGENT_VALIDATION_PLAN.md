@@ -1,5 +1,7 @@
 # Phase C — Agent Role Validation Plan
 
+> **DEPRECATED (2026-05-05)**: Phase C complete (4/4 agents PASSED). Outcome in `PHASE_C_ROUND1_AUDIT.md` + `PHASE_C_A1_REVALIDATION_VERDICT.md`. Agent invocation pattern (subagent_type limitation) codified in memory `feedback_agent_invocation_pattern.md`.
+
 _Date: 2026-05-01_
 _Trigger: Phase B real-data experiments complete (B1 XGBoost + B3 PINN 5-seed measured)_
 
