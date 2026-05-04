@@ -235,6 +235,7 @@ These are recorded so neither the user nor a future agent re-runs them. Each ent
 
 ## 6. POINTERS
 
+- **Canonical leaderboard (all runs as a single table)**: `RESULTS.md` ← read this when you need numbers
 - Deep narrative + 12-section history: `docs/PROJECT_REPORT.md`
 - Pipeline definition: `PEX_FRAMEWORK.md`
 - Paper drafts: `pex_v3/paper/{METHOD,RESULTS_CONSOLIDATED,OUTLINE}.md`
