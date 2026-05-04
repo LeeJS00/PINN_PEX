@@ -169,9 +169,9 @@ Currently: only via 5-seed cross-design test number above (combined with tv80s).
 
 ---
 
-## 10. Legacy v9-era AL runs (output_intel22/active_learning, single-seed, narrative-only)
+## 10. Legacy v9-era AL runs (ARCHIVED 2026-05-05)
 
-These pre-date the v3 paradigm shift. None feed paper claims. Detailed narrative in `docs/PROJECT_REPORT.md` §2.
+These pre-date the v3 paradigm shift. None feed paper claims. Detailed narrative in `docs/PROJECT_REPORT.md` §2. **Raw artifacts moved to `/data/PINNPEX/legacy_archive/output_intel22/active_learning/` (78 GB, 52 dirs)** — see `README.md` there for restoration instructions.
 
 | Run dir | Track | Single-seed result | Status |
 |---|---|---|---|
