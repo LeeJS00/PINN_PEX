@@ -686,12 +686,17 @@ def extract_v3_features(geo, layer_map, n_workers: int) -> pd.DataFrame:
     else:
         density_window = 1.0
 
-    # V3-C: dispatch largest nets first so straggler tail does not
-    # bottleneck the Pool. chunksize=1 prevents one worker queueing a
-    # bundle of expensive nets while others sit idle.
+    # V3-C: dispatch largest nets first so straggler tail does not bottleneck
+    # the Pool. Adaptive chunksize: small designs (tv80s, 3.4k nets) need
+    # chunksize=1 so the few-second tail nets distribute across workers
+    # immediately; large designs (nova, 119k nets) need chunksize~7 so the
+    # IPC cost per task is amortized over a non-trivial batch.
     target_nets = sorted(geo["target_set"],
                          key=lambda n: -len(geo["nets"].get(n, ())))
     rows = []
+    total = len(target_nets)
+    chunksize = max(1, total // (n_workers * 1000))
+    t_progress = time.time()
     if n_workers <= 1:
         init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window)
         for nm in target_nets:
@@ -701,9 +706,17 @@ def extract_v3_features(geo, layer_map, n_workers: int) -> pd.DataFrame:
     else:
         with mp.Pool(processes=n_workers, initializer=init_worker_v3,
                      initargs=(geo, grid, eps_by_layer, density_per_layer, density_window)) as pool:
-            for r in pool.imap_unordered(_v3_per_net, target_nets, chunksize=1):
+            for i, r in enumerate(pool.imap_unordered(
+                    _v3_per_net, target_nets, chunksize=chunksize), 1):
                 if r:
                     rows.append(r)
+                if i % 5000 == 0 or i == total:
+                    elapsed = time.time() - t_progress
+                    rate = i / max(elapsed, 1e-3)
+                    eta = (total - i) / max(rate, 1e-3)
+                    print(f"  V3 progress {i}/{total} elapsed={elapsed:.0f}s "
+                          f"rate={rate:.0f}/s eta={eta:.0f}s "
+                          f"chunk={chunksize}", flush=True)
     return pd.DataFrame(rows)
 
 
@@ -722,9 +735,12 @@ def extract_v4_h3_from_tile_cache(design: str, target_nets: set, n_workers: int)
     grp: Dict[str, List[Path]] = defaultdict(list)
     for r in df.itertuples(index=False):
         grp[r.net_name].append(tile_dir / r.sample_filename)
-    # V3-C (V4 arm): largest-tile nets first, chunksize=1.
+    # V3-C (V4 arm): largest-tile nets first, adaptive chunksize.
     job_args = sorted(grp.items(), key=lambda kv: -len(kv[1]))
     rows = []
+    total = len(job_args)
+    chunksize = max(1, total // (n_workers * 1000))
+    t_progress = time.time()
     if n_workers <= 1:
         for ja in job_args:
             f = _v4_process_net(ja)
@@ -732,9 +748,17 @@ def extract_v4_h3_from_tile_cache(design: str, target_nets: set, n_workers: int)
                 rows.append(f)
     else:
         with mp.Pool(processes=n_workers) as pool:
-            for f in pool.imap_unordered(_v4_process_net, job_args, chunksize=1):
+            for i, f in enumerate(pool.imap_unordered(
+                    _v4_process_net, job_args, chunksize=chunksize), 1):
                 if f:
                     rows.append(f)
+                if i % 5000 == 0 or i == total:
+                    elapsed = time.time() - t_progress
+                    rate = i / max(elapsed, 1e-3)
+                    eta = (total - i) / max(rate, 1e-3)
+                    print(f"  V4 progress {i}/{total} elapsed={elapsed:.0f}s "
+                          f"rate={rate:.0f}/s eta={eta:.0f}s "
+                          f"chunk={chunksize}", flush=True)
     return pd.DataFrame(rows)
 
 

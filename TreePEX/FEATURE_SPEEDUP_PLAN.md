@@ -198,14 +198,37 @@ nets and contributes < 1 % to the wall reduction here. **V3-A's value
 will only materialize on nova**, where N_t reaches 1257 (vs tv80s 1110)
 and a 2-3× per-tail-net reduction matters across more long-tail nets.
 
-**Promotion to nova (next)**:
-* Re-run `pex_cold.py --design intel22_nova_f3 --workers 16` with the
-  Round 1 patch. Expected: ~2700-3000 s (vs baseline 8059 s = 2.7-3.0 ×).
-  Does NOT hit the §1 nova ≤ 1,800 s gate — Round 2 GPU is required for
-  that.
-* Same MAPE gates: tot ∈ [5.30, 5.75] %, gnd / cpl within ±0.3 pp of
-  current.
-* If nova MAPE checks out, Round 1 commits and we move to Round 2.
+**Nova promotion outcome (measured 2026-05-13)**:
+
+| Metric | Baseline | Patched | Δ |
+|---|---:|---:|---|
+| pipeline wall | 8,059.16 s | **7,181.98 s** | **1.12 × (−10.9 %)** |
+| V3 features | 5,607.13 s | 4,870.86 s | 1.15 × |
+| V4 H3 features | 2,348.97 s | 2,207.47 s | 1.06 × |
+| MAPE_tot | 5.5385 % | 5.541 % | +0.003 pp ✅ |
+| MAPE_gnd | 15.8547 % | 15.86 % | +0.01 pp ✅ |
+| MAPE_cpl | 15.9372 % | 15.96 % | +0.02 pp ✅ |
+| R²_tot | 0.9867 | 0.9865 | −0.0002 ✅ |
+
+**All MAPE gates pass on nova.** Wall reduction (11 %) is much weaker
+than tv80s (53 %) for two structural reasons:
+1. V3-A=512 rarely triggers on nova — most of 118,959 nets have
+   N_t ≪ 512. The cap only clips the top few hundred nets.
+2. V3-C still gives a 13 % V3 speedup, but with 118 k tasks the
+   `chunksize=1` IPC overhead was prohibitive (first try: V3 stuck
+   past 60 min before kill). Adaptive `chunksize = max(1, total // (n_workers
+   * 1000))` solved this — small designs (tv80s 3.4 k nets) still get
+   `chunksize=1`, large designs (nova 119 k nets) get `chunksize=7`.
+
+**Implication**: Round 1 hits the §6 MAPE gate on nova but misses the
+§1 wall gate (1,800 s) by 4× and the §8 Round-2 target (200 s) by 36×.
+**Round 2 (per-design `.pt` asset + batched GPU broadcast) is the only
+remaining path** to materially reduce nova V3+V4 from this floor.
+
+V4 progress curve revealed an additional Round-2 lever: tile-load
+dominates the long-tail nets (113 k V4 jobs × 1-5 tiles each = ~250 k
+gzip+pickle reads) — V4-A (per-net pre-aggregation) would eliminate
+this entirely with no accuracy risk.
 
 ### Round 2 — Tensor asset + GPU broadcast (target: nova ≤ 200 s, tv80s ≤ 8 s)
 
