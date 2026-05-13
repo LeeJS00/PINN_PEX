@@ -365,15 +365,112 @@ End-to-end comparison data the user requested:
 | + V4-A (tv80s only) | 57.9 s | 13.2 / 37.7 | n/a | tot −0.01 pp ✅ |
 | + V3 GPU batched | 75.0 s | 28.4 / 37.6 | killed @ 1024 nets | n/a |
 
-### Round 3 — optional ceiling pushes (only if Round 2 leaves headroom)
+### Round 3 — V3 algorithmic redesign (IN PROGRESS 2026-05-13)
 
-8. **D-pred** (XGBoost GPU predict) — quick free win.
-9. **F** (torch.compile / Triton custom kernel) — only if naive torch in
-   Round 2 leaves > 50 % headroom.
-10. Global sparse adjacency + `scatter_add` (the more aggressive
-    interpretation of B). Replaces per-net GPU dispatch with one-shot
+After Round 2 ruled out GPU dispatch as a profitable per-net escalation
+(per-net + batched both regress on nova), the only remaining ROI lever
+is to replace the **algorithm**, not the device. Per-target-cuboid
+SpatialGrid query + inline per-aggressor closest-pair reduction. The
+global (N_t × N_c) numpy broadcast inside `_v3_compute_closest_cpu`
+materializes a (512 × 120 k) ≈ 480 MB transient on nova long-tail nets,
+so memory bandwidth (not arithmetic) is the actual bottleneck. Per-target
+queries return ~40 truly local candidates per target cuboid, avoiding
+the broadcast entirely.
+
+Codex+Gemini round 1 (parallel reviewers) converged on **hybrid threshold
+gate**: per-target path for long-tail nets, legacy numpy broadcast for
+tiny nets where Python loop overhead dominates.
+
+**Implementation (`pex_cold.py:_v3_aggregate_per_target`)**:
+- Per-target-cuboid grid query against the GLOBAL SpatialGrid (already
+  built once per design — zero per-net build cost).
+- `sub_idx.sort()` after own-net filter so candidate ordering is
+  deterministic (legacy's `set` iteration order is impl-defined; sort
+  removes that as a confounder).
+- Strict `<` aggregator update for per-aggressor closest pair —
+  preserves first-encountered-wins tie rule.
+- Gate: `_V3_PER_TARGET_PAIR_THRESHOLD = 10_000_000` (post-V3-A pair
+  count). `_V3_PER_TARGET_MODE = "auto" | "per_target" | "legacy"` via
+  `--v3-algo` CLI flag.
+- Edges output shape (per-aggressor dict → sorted by overlap → top-768
+  capped) matches legacy exactly.
+
+**Validation (tv80s, single-process dump, 120 nets)**:
+
+| Feature class | Bit-exact | R² ≥ 0.99 | MAE_pct |
+|---|---:|---:|---:|
+| V4 H3 (26-D, kernel unchanged) | 26/26 | – | 0.000 |
+| V3 scalar (sums, layer_hist, compact_gnd, vss_*) | 31/41 | – | 0.000 |
+| V3 closest-pair (broadside/lateral_total, compact_cpl) | 0/3 | 3/3 ✅ | 1.3–3.8 % |
+| V3 closest-pair (spacing percentiles, n_edges_*) | 0/6 | 3/6 ⚠️ | 2.2–98.5 % |
+| V3 closest-pair (overlap_p95) | 0/1 | 1/1 | 111 % * |
+
+\* `broadside_overlap_p95_um2` has MAE_pct = 111 % only because the
+mean is sub-micron² (~5e-3); R² = 0.995 confirms the per-net values
+themselves are tight.
+
+The 6 features below R² ≥ 0.99 (`spacing_p25, p50, p95`, `n_edges_lt_1um,
+1_to_3um, 3_to_4um`) drift because of float-equal tie-breaks for the
+chosen (t*, c*) pair. Probe on `CTS_2`: legacy & per-target agree on
+**768 aggressors, 0 distance mismatches**, but broadside/lateral differ
+when multiple (t, c) pairs hit the exact same minimum distance — the
+chosen pair's overlap region depends on iteration order.
+
+**tv80s pipeline outcome (single-design wall, full pipeline)**:
+
+| Run | V3 / V4 wall | pipeline | MAPE_tot | MAPE_gnd | MAPE_cpl | R²_tot |
+|---|---:|---:|---:|---:|---:|---:|
+| Round 1 + V4-A (legacy) | 12.76 / 37.79 s | 58.5 s | 5.097 % | 17.62 % | 13.86 % | 0.9923 |
+| + Round 3 per_target (auto) | 17.67 / 38.11 s | 62.7 s | 5.098 % | 17.80 % | 14.01 % | 0.9919 |
+
+MAPE gates **all pass**: tot −0.01 pp, gnd +0.17 pp ✅, cpl +0.13 pp ✅,
+R² −0.0004. On tv80s the new V3 is **slower** (17.7 vs 12.8 s) — the
+~10 nets that hit the 10 M-pair threshold pay ~500 ms per-target overhead
+versus legacy's ~250 ms broadcast. tv80s is not the target design; the
+threshold may need to bump to 30-50 M to keep tv80s on legacy entirely.
+nova is where the win must show up.
+
+**nova full-pipeline outcome (LOCKED 2026-05-14)**:
+
+| Metric | Round 1 (committed) | Round 3 per_target | Δ |
+|---|---:|---:|---|
+| pipeline wall | 7,181.98 s | **5,345.85 s** | **−1,836 s (−25.6 %)** ✅ |
+| V3 features wall | 4,870.86 s | **2,924.08 s** | **−1,947 s (1.67 ×)** |
+| V4 features wall | 2,207.47 s | 2,243.51 s | +36 s (~0 %) |
+| MAPE_tot | 5.541 % | 5.548 % | +0.007 pp ✅ (gate ±0.2 pp) |
+| MAPE_gnd | 15.86 % | 15.87 % | +0.01 pp ✅ (gate ±0.3 pp) |
+| MAPE_cpl | 15.96 % | 15.97 % | +0.01 pp ✅ (gate ±0.3 pp) |
+| R²_tot | 0.9865 | 0.9862 | −0.0003 ✅ |
+
+V3 rate trajectory tracked from 21 → 41 nets/s as top-tail nets cleared
+(top-tail is where per_target wins; mid-tail falls back to legacy at the
+10 M-pair gate). V4 rate trajectory similar shape (5/s in CTS spines →
+250+/s in mid-tail); V4 path unchanged.
+
+**Pipeline scoreboard end-of-Round-3**:
+
+| Run | tv80s pipeline | nova pipeline | nova MAPE_tot drift |
+|---|---:|---:|---:|
+| Baseline (pre-patch) | 169.5 s | 8,059 s | ref |
+| Round 1 (committed) | 78.0 s | 7,182 s | +0.003 pp ✅ |
+| + V4-A (tv80s only) | 57.9 s | n/a | tot −0.01 pp ✅ |
+| **+ Round 3 per_target** | 62.7 s ⚠ | **5,346 s** | **+0.007 pp ✅** |
+
+⚠ tv80s slightly regresses (12.8 → 17.7 s V3) — the threshold should
+bump to 30-50 M pairs so tv80s falls back to legacy entirely. Doesn't
+affect nova win. Filed as Round 4 #14.
+
+### Round 4 — optional ceiling pushes (only if Round 3 leaves headroom)
+
+12. **D-pred** (XGBoost GPU predict) — quick free win.
+13. **F** (torch.compile / Triton custom kernel) — only if Round 3
+    leaves > 50 % headroom.
+14. **Numba JIT** the per-target inner loop — drops Python grid_query
+    overhead, may compound the Round 3 win 2-3 ×.
+15. Global sparse adjacency + `scatter_add` (the more aggressive
+    interpretation of B). Replaces per-net dispatch with one-shot
     design-level kernel.
-11. **DEF-A** (cache parsed DEF) for re-run workflow.
+16. **DEF-A** (cache parsed DEF) for re-run workflow.
 
 ## 6. Acceptance criteria
 

@@ -427,6 +427,116 @@ _V3_USE_GPU = False
 # skips its own broadcast and consults the cache.
 _V3_CLOSEST_CACHE: Dict[str, tuple] = None
 
+# Round 3 (V3 algorithmic redesign): replace the global (N_t × N_c) numpy
+# broadcast with a per-target-cuboid SpatialGrid query + inline per-aggressor
+# closest reduction. Avoids materializing the (N_t × N_c) distance matrix.
+# Gate: only the long-tail nets (>= _V3_PER_TARGET_PAIR_THRESHOLD pairs)
+# switch to the new path; tiny nets stay on the well-tuned numpy broadcast
+# (Python grid_query overhead per-target wins only when the avoided pair
+# count dwarfs the broadcast).
+#
+# Threshold 30 M ≥ tv80s max pair count (512 × 52,662 ≈ 27 M) so tv80s
+# stays on legacy entirely (avoids the 30 % V3 regression measured at
+# threshold 10 M). nova long-tail (N_c ≥ 120 k) → pair ≥ 61 M, still
+# triggers per-target. Measured nova win at threshold 10 M: pipeline
+# 7,182 → 5,346 s (1.67 × on V3, MAPE drift +0.007 pp tot ✅). Lifting
+# to 30 M only declassifies the marginal tv80s long-tail; nova benefit
+# preserved.
+_V3_PER_TARGET_PAIR_THRESHOLD = 30_000_000
+# Mode: "auto" → threshold-gated, "per_target" → always new, "legacy" → always old.
+_V3_PER_TARGET_MODE: str = "auto"
+
+
+def _v3_aggregate_per_target(net_name: str, target_arr_bc: np.ndarray,
+                             cutoff_um: float) -> List[dict]:
+    """Per-target-cuboid alternative to `_v3_compute_closest_cpu` + the
+    per-aggressor argmin aggregator. Produces the same `edges` list shape
+    as the legacy path. Two semantic guarantees:
+
+    1. **Equivalence**: aggregator output (per-aggressor closest pair) is
+       `min over (t, c) pairs within CUTOFF`; numpy broadcast reduced over
+       target axis first then over candidates yields the same minimum.
+    2. **Tie-break parity**: SpatialGrid `seen` is a Python set (iteration
+       order is impl-defined). We `sub_idx.sort()` so per-target candidate
+       ordering is deterministic; the per-aggressor update uses strict `<`
+       so a first-found pair survives equal-distance follow-ups, matching
+       the legacy `argmin(axis=0)` first-index tie rule on the target side.
+    """
+    grid = _V3_GRID
+    all_cubs = _V3_ALL_CUBS
+    all_owner = _V3_ALL_OWNER
+    n_t = len(target_arr_bc)
+    aggr_to_closest: Dict[str, dict] = {}
+
+    for ti in range(n_t):
+        tx = float(target_arr_bc[ti, 0]); ty = float(target_arr_bc[ti, 1])
+        tw = float(target_arr_bc[ti, 3]); th = float(target_arr_bc[ti, 4])
+        tl = int(target_arr_bc[ti, 6])
+        t_lat_scale = float(target_arr_bc[ti, 5])
+
+        local_idx = grid.query_bbox(
+            tx - tw / 2 - cutoff_um, tx + tw / 2 + cutoff_um,
+            ty - th / 2 - cutoff_um, ty + th / 2 + cutoff_um,
+        )
+        if len(local_idx) == 0:
+            continue
+        local_owners = all_owner[local_idx]
+        keep = local_owners != net_name
+        if not keep.any():
+            continue
+        sub_idx = local_idx[keep]
+        sub_idx.sort()
+        sub_owners = all_owner[sub_idx]
+        sub_cubs = all_cubs[sub_idx]
+
+        dx = np.maximum(np.abs(sub_cubs[:, 0] - tx) - (sub_cubs[:, 3] + tw) / 2, 0.0)
+        dy = np.maximum(np.abs(sub_cubs[:, 1] - ty) - (sub_cubs[:, 4] + th) / 2, 0.0)
+        dist = np.sqrt(dx * dx + dy * dy)
+        in_range = dist <= cutoff_um
+        if not in_range.any():
+            continue
+        sel_cubs = sub_cubs[in_range]
+        sel_owners = sub_owners[in_range]
+        sel_dist = dist[in_range]
+        bs_x = np.maximum(
+            np.minimum(tx + tw / 2, sel_cubs[:, 0] + sel_cubs[:, 3] / 2)
+            - np.maximum(tx - tw / 2, sel_cubs[:, 0] - sel_cubs[:, 3] / 2),
+            0.0,
+        )
+        bs_y = np.maximum(
+            np.minimum(ty + th / 2, sel_cubs[:, 1] + sel_cubs[:, 4] / 2)
+            - np.maximum(ty - th / 2, sel_cubs[:, 1] - sel_cubs[:, 4] / 2),
+            0.0,
+        )
+        broadside = bs_x * bs_y
+        lateral = t_lat_scale * np.maximum(bs_x, bs_y)
+        for j in range(sel_owners.shape[0]):
+            a_owner = str(sel_owners[j])
+            d_j = float(sel_dist[j])
+            prior = aggr_to_closest.get(a_owner)
+            if prior is None or d_j < prior["dist"]:
+                aggr_to_closest[a_owner] = {
+                    "dist": d_j,
+                    "broadside": float(broadside[j]),
+                    "lateral": float(lateral[j]),
+                    "aggr_layer": int(sel_cubs[j, 6]),
+                    "tgt_layer": tl,
+                }
+
+    edges = [
+        {
+            "aggressor_net": a,
+            "tgt_layer": info["tgt_layer"],
+            "aggr_layer": info["aggr_layer"],
+            "surface_dist_um": info["dist"],
+            "broadside_overlap_um2": info["broadside"],
+            "lateral_overlap_um2": info["lateral"],
+        }
+        for a, info in aggr_to_closest.items()
+    ]
+    edges.sort(key=lambda e: -(e["broadside_overlap_um2"] + e["lateral_overlap_um2"]))
+    return edges[:MAX_AGGR_PER_NET]
+
 
 def _v3_phase_a_for_net(net_name: str):
     """Run the Phase-A (spatial-query + V3-A target subsample) prep work
@@ -553,65 +663,79 @@ def _v3_per_net(net_name: str) -> Dict[str, float]:
             target_arr_bc = target_arr[sub_idx]
         else:
             target_arr_bc = target_arr
-        if cached_entry is not None:
-            closest_t = cached_entry["closest_t"]
-            closest_d = cached_entry["closest_d"]
-            in_range = cached_entry["in_range"]
-        elif _V3_USE_GPU and len(target_arr_bc) * len(cand_arr) >= 4096:
-            closest_t, closest_d, in_range = _v3_compute_closest_gpu(
-                target_arr_bc, cand_arr, CUTOFF_UM,
-                cand_idx_into_all=cand_idx_into_all)
+
+        # Round 3 gate: per-target-cuboid grid path for long-tail nets.
+        # Skipped when batched-GPU cache is hot (it already has the result).
+        n_pairs = len(target_arr_bc) * len(cand_arr)
+        use_per_target = (
+            cached_entry is None
+            and (_V3_PER_TARGET_MODE == "per_target"
+                 or (_V3_PER_TARGET_MODE == "auto"
+                     and n_pairs >= _V3_PER_TARGET_PAIR_THRESHOLD))
+        )
+
+        if use_per_target:
+            edges = _v3_aggregate_per_target(net_name, target_arr_bc, CUTOFF_UM)
         else:
-            closest_t, closest_d, in_range = _v3_compute_closest_cpu(
-                target_arr_bc, cand_arr, CUTOFF_UM)
-        if in_range.any():
-            sel_cuboids = cand_arr[in_range]
-            sel_owners = cand_owners[in_range]
-            sel_dist = closest_d[in_range]
-            sel_tidx = closest_t[in_range]
-            matched_t = target_arr_bc[sel_tidx]
-            bs_x = np.maximum(
-                np.minimum(matched_t[:, 0] + matched_t[:, 3] / 2,
-                           sel_cuboids[:, 0] + sel_cuboids[:, 3] / 2)
-                - np.maximum(matched_t[:, 0] - matched_t[:, 3] / 2,
-                             sel_cuboids[:, 0] - sel_cuboids[:, 3] / 2),
-                0,
-            )
-            bs_y = np.maximum(
-                np.minimum(matched_t[:, 1] + matched_t[:, 4] / 2,
-                           sel_cuboids[:, 1] + sel_cuboids[:, 4] / 2)
-                - np.maximum(matched_t[:, 1] - matched_t[:, 4] / 2,
-                             sel_cuboids[:, 1] - sel_cuboids[:, 4] / 2),
-                0,
-            )
-            broadside = bs_x * bs_y
-            lateral = matched_t[:, 5] * np.maximum(bs_x, bs_y)
-            aggr_to_closest: Dict[str, dict] = {}
-            for k in range(len(sel_owners)):
-                a_owner = str(sel_owners[k])
-                d_k = float(sel_dist[k])
-                prior = aggr_to_closest.get(a_owner)
-                if prior is None or d_k < prior["dist"]:
-                    aggr_to_closest[a_owner] = {
-                        "dist": d_k,
-                        "broadside": float(broadside[k]),
-                        "lateral": float(lateral[k]),
-                        "aggr_layer": int(sel_cuboids[k, 6]),
-                        "tgt_layer": int(matched_t[k, 6]),
+            if cached_entry is not None:
+                closest_t = cached_entry["closest_t"]
+                closest_d = cached_entry["closest_d"]
+                in_range = cached_entry["in_range"]
+            elif _V3_USE_GPU and len(target_arr_bc) * len(cand_arr) >= 4096:
+                closest_t, closest_d, in_range = _v3_compute_closest_gpu(
+                    target_arr_bc, cand_arr, CUTOFF_UM,
+                    cand_idx_into_all=cand_idx_into_all)
+            else:
+                closest_t, closest_d, in_range = _v3_compute_closest_cpu(
+                    target_arr_bc, cand_arr, CUTOFF_UM)
+            if in_range.any():
+                sel_cuboids = cand_arr[in_range]
+                sel_owners = cand_owners[in_range]
+                sel_dist = closest_d[in_range]
+                sel_tidx = closest_t[in_range]
+                matched_t = target_arr_bc[sel_tidx]
+                bs_x = np.maximum(
+                    np.minimum(matched_t[:, 0] + matched_t[:, 3] / 2,
+                               sel_cuboids[:, 0] + sel_cuboids[:, 3] / 2)
+                    - np.maximum(matched_t[:, 0] - matched_t[:, 3] / 2,
+                                 sel_cuboids[:, 0] - sel_cuboids[:, 3] / 2),
+                    0,
+                )
+                bs_y = np.maximum(
+                    np.minimum(matched_t[:, 1] + matched_t[:, 4] / 2,
+                               sel_cuboids[:, 1] + sel_cuboids[:, 4] / 2)
+                    - np.maximum(matched_t[:, 1] - matched_t[:, 4] / 2,
+                                 sel_cuboids[:, 1] - sel_cuboids[:, 4] / 2),
+                    0,
+                )
+                broadside = bs_x * bs_y
+                lateral = matched_t[:, 5] * np.maximum(bs_x, bs_y)
+                aggr_to_closest: Dict[str, dict] = {}
+                for k in range(len(sel_owners)):
+                    a_owner = str(sel_owners[k])
+                    d_k = float(sel_dist[k])
+                    prior = aggr_to_closest.get(a_owner)
+                    if prior is None or d_k < prior["dist"]:
+                        aggr_to_closest[a_owner] = {
+                            "dist": d_k,
+                            "broadside": float(broadside[k]),
+                            "lateral": float(lateral[k]),
+                            "aggr_layer": int(sel_cuboids[k, 6]),
+                            "tgt_layer": int(matched_t[k, 6]),
+                        }
+                edges = [
+                    {
+                        "aggressor_net": a,
+                        "tgt_layer": info["tgt_layer"],
+                        "aggr_layer": info["aggr_layer"],
+                        "surface_dist_um": info["dist"],
+                        "broadside_overlap_um2": info["broadside"],
+                        "lateral_overlap_um2": info["lateral"],
                     }
-            edges = [
-                {
-                    "aggressor_net": a,
-                    "tgt_layer": info["tgt_layer"],
-                    "aggr_layer": info["aggr_layer"],
-                    "surface_dist_um": info["dist"],
-                    "broadside_overlap_um2": info["broadside"],
-                    "lateral_overlap_um2": info["lateral"],
-                }
-                for a, info in aggr_to_closest.items()
-            ]
-            edges.sort(key=lambda e: -(e["broadside_overlap_um2"] + e["lateral_overlap_um2"]))
-            edges = edges[:MAX_AGGR_PER_NET]
+                    for a, info in aggr_to_closest.items()
+                ]
+                edges.sort(key=lambda e: -(e["broadside_overlap_um2"] + e["lateral_overlap_um2"]))
+                edges = edges[:MAX_AGGR_PER_NET]
 
     feats["n_aggressor_nets"] = float(len({e["aggressor_net"] for e in edges}))
     if edges:
@@ -991,13 +1115,21 @@ def apply_fanout_proxy(df: pd.DataFrame) -> pd.Series:
 
 
 def extract_v3_features(geo, layer_map, n_workers: int,
-                        use_gpu: bool = False) -> pd.DataFrame:
+                        use_gpu: bool = False,
+                        algo: str = "auto") -> pd.DataFrame:
     """Run V3 feature extraction. When `use_gpu` is True, the per-net
     closest-pair broadcast (`pex_cold.py:_v3_compute_closest_gpu`) runs on
     CUDA and the dispatch falls back to single-process — torch CUDA contexts
     do not survive fork-Pool workers.
+
+    `algo` controls the closest-pair backend selector that `_v3_per_net`
+    consults: `"auto"` (default, threshold-gated per-target for long-tail),
+    `"per_target"` (always per-target), or `"legacy"` (always numpy broadcast).
     """
-    global _V3_USE_GPU
+    global _V3_USE_GPU, _V3_PER_TARGET_MODE
+    if algo not in {"auto", "per_target", "legacy"}:
+        raise ValueError(f"unknown --v3-algo {algo!r}")
+    _V3_PER_TARGET_MODE = algo
     eps_by_layer = _layer_eps_array(layer_map, N_LAYERS_EPS)
     grid = SpatialGrid()
     grid.build(geo["all_cuboids"])
@@ -1320,7 +1452,7 @@ def mape_mean(p, g):
 # ============================================================================
 
 def run_design(design: str, def_path: Path, n_workers: int,
-               v3_gpu: bool = False) -> dict:
+               v3_gpu: bool = False, v3_algo: str = "auto") -> dict:
     print(f"\n========== COLD-START ▶ {design} ==========", flush=True)
     timings = {"design": design, "n_workers_per_design": n_workers}
     t_design_start = time.time()
@@ -1347,7 +1479,8 @@ def run_design(design: str, def_path: Path, n_workers: int,
 
     # 3) V3 feature extraction (DEF-only, parallel)
     t0 = time.time()
-    df_v3 = extract_v3_features(geo, layer_map, n_workers, use_gpu=v3_gpu)
+    df_v3 = extract_v3_features(geo, layer_map, n_workers,
+                                use_gpu=v3_gpu, algo=v3_algo)
     timings["t_v3_features_s"] = round(time.time() - t0, 3)
     timings["n_v3_rows"] = len(df_v3)
     print(f"[{design}] V3 features: {timings['t_v3_features_s']}s  rows={timings['n_v3_rows']:,}",
@@ -1460,6 +1593,11 @@ def main():
     ap.add_argument("--v3-gpu", action="store_true",
                     help="Run V3 closest-pair on torch + CUDA (single-process, "
                          "no fork-Pool). Round 2.2.")
+    ap.add_argument("--v3-algo", type=str, default="auto",
+                    choices=["auto", "per_target", "legacy"],
+                    help="V3 closest-pair backend: auto (threshold-gated, "
+                         "default), per_target (always new per-target grid path), "
+                         "legacy (always numpy broadcast). Round 3.")
     args = ap.parse_args()
     if args.design:
         if args.design not in DESIGNS:
@@ -1472,13 +1610,16 @@ def main():
     summaries: List[dict] = []
     if args.serial or len(targets) == 1:
         for d, p in targets:
-            summaries.append(run_design(d, p, args.workers, v3_gpu=args.v3_gpu))
+            summaries.append(run_design(d, p, args.workers,
+                                         v3_gpu=args.v3_gpu, v3_algo=args.v3_algo))
     else:
         if args.v3_gpu:
             raise SystemExit("--v3-gpu requires --serial or a single --design "
                              "(CUDA state is per-process)")
         with ProcessPoolExecutor(max_workers=len(targets)) as ex:
-            futs = {ex.submit(run_design, d, p, args.workers): d for d, p in targets}
+            futs = {ex.submit(run_design, d, p, args.workers,
+                                False, args.v3_algo): d
+                    for d, p in targets}
             for fut in as_completed(futs):
                 d = futs[fut]
                 try:

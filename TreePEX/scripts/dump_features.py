@@ -119,7 +119,13 @@ def main():
     ap.add_argument("--sample-seed", type=int, default=2026)
     ap.add_argument("--out-dir", default=None)
     ap.add_argument("--skip-v4", action="store_true")
+    ap.add_argument("--v3-algo", default="auto",
+                    choices=["auto", "per_target", "legacy"],
+                    help="V3 closest-pair backend (Round 3).")
     args = ap.parse_args()
+    import pex_cold as _px
+    _px._V3_PER_TARGET_MODE = args.v3_algo
+    print(f"[dump] v3_algo={args.v3_algo}", flush=True)
 
     out_dir = Path(args.out_dir) if args.out_dir else (
         ROOT / "TreePEX" / "outputs" / "cold_reports" / "feature_dumps")
