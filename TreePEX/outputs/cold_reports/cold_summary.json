@@ -1,0 +1,39 @@
+{
+  "wall_total_s_parallel": 80.8,
+  "per_design": [
+    {
+      "design": "intel22_tv80s_f3",
+      "n_workers_per_design": 16,
+      "t_pdk_parse_s": 0.352,
+      "t_def_parse_s": 2.203,
+      "n_target_nets": 3380,
+      "n_pin_pseudo_nets": 19522,
+      "n_total_cuboids": 147156,
+      "t_v3_features_s": 16.554,
+      "n_v3_rows": 3380,
+      "t_v4_h3_features_s": 56.265,
+      "n_v4_rows": 3280,
+      "n_feature_rows": 3280,
+      "t_inference_s": 3.455,
+      "t_spef_write_s": 0.118,
+      "spef_size_mb": 0.21,
+      "n_nets_compared": 3280,
+      "MAPE_tot_med": 5.1074,
+      "MAPE_tot_mean": 6.3945,
+      "MAPE_gnd_med": 17.628,
+      "MAPE_cpl_med": 13.8836,
+      "R2_tot": 0.992051,
+      "R2_gnd": 0.967088,
+      "R2_cpl": 0.961218,
+      "pred_chip_total_fF": 4515.486,
+      "pred_chip_gnd_fF": 1752.082,
+      "pred_chip_cpl_fF": 2763.405,
+      "gold_chip_total_fF": 4454.868,
+      "gold_chip_gnd_fF": 1746.33,
+      "gold_chip_cpl_fF": 2708.538,
+      "t_compare_s": 1.658,
+      "t_design_total_s": 80.709,
+      "t_user_pipeline_s": 78.947
+    }
+  ]
+}
