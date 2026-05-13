@@ -285,15 +285,85 @@ When both are on, tv80s pipeline is **71.3 s** (vs Round 1 78 s) — the
 V4-A win is real, the V3 GPU regression cancels much of it. Not yet a
 clean Pareto improvement.
 
-### Path forward (next session)
+### Round 2.1b — V4-A schema-v5 correctness probe (FAILED 2026-05-13)
 
-1. Reconsider V4-A storage: schema v5 (tile bbox metadata only)
-   for nova-scale viability.
-2. Reconsider V3 GPU: batched dispatch OR hybrid CPU+GPU routing.
-3. End-to-end accuracy + wall comparison table to be produced once a
-   nova-viable Round 2 candidate exists. Feature dumps + diff reports
-   already in `TreePEX/outputs/cold_reports/{feature_dumps,diff_*.md}`
-   so each new candidate can be benchmarked with one command.
+Idea: store only per-tile origin metadata (~10 MB total) and recompute
+tile-aggregated cuboid sets on the fly from DEF cuboids + a 14 µm xy
+bbox query around each origin. Probe script `TreePEX/scripts/_v5_verify.py`.
+
+Verdict: **bbox query does NOT reproduce tile pkl.gz contents**. The
+training-time tile builder clips DEF cuboids to the 14 µm window (a
+single 50 µm wire becomes 14 µm-clipped tile pieces, one per overlap),
+includes VSS power rails, and emits builder-internal pseudo-names like
+`UNKNOWN_PIN`. On one tile probe (`A_0_tile16`): 514 distinct owners in
+the tile vs 605 in a naive bbox query (92 false-positive INST-port
+owners + 1 missing builder-only owner), and per-owner cuboid counts
+diverge in both directions (centroid containment alone is too narrow,
+overlap-only is too wide).
+
+V4-A schema v5 requires replicating the exact build_dataset.py clipping
+rule. Recorded as deferred — V3 is a far bigger nova ROI lever than V4.
+
+### Round 2.2b — V3 batched GPU (FAILED 2026-05-13)
+
+Wired `--v3-gpu` through `pex_cold.py` with three progressively more
+clever implementations; none beat the 16-worker CPU baseline on either
+design:
+
+| variant | tv80s V3 wall | tv80s pipeline | nova V3 (rate) |
+|---|---:|---:|---:|
+| CPU 16-worker (Round 1) | 16.5 s | 78 s | 24-30 nets/s |
+| GPU single-net, fresh transfer | 27.0 s | 71 s | 10 nets/s, ETA 3 h |
+| + persistent `_V3_ALL_CUBS` on GPU, gather by `cand_idx` | 26.6 s | 71 s | not run |
+| + greedy memory-budget batched broadcast | 28.4 s | 75 s | 6 nets/s, ETA 5.5 h |
+
+`pex_cold.py:_v3_compute_closest_batched_gpu` pads each batch to
+`(B, max_t, max_c)` and runs one fused broadcast. The dispatch
+amortizes only when nets in a batch have *similar* size. Sorting by
+`-len(target_arr)` doesn't help because `N_c` (candidate count from
+the spatial query) varies independently — clock spines blow up `max_c`
+to ~120 K and the memory budget forces batches down to B ≈ 4 with
+30 × padding waste.
+
+Root cause: per-net spatial-query / owner-filter / V3-A subsample
+already costs ~5 ms in pure Python, and the GPU broadcast for typical
+nets is sub-millisecond. There is no inherent compute deficit to claim
+back; GPU pays a constant launch overhead per *batch*, which only
+helps if hundreds of nets share `(max_t, max_c)`.
+
+Workable next iterations recorded for future sessions:
+
+* **Bucket-by-size batching**: explicit small/medium/large buckets,
+  bucket-specific (max_t, max_c) bounds. Top-K large nets bypass
+  batching and run individually on GPU; tiny nets batch B ≈ 1024.
+* **Hybrid fork-Pool + spawn GPU sidecar**: keep CPU multi-proc for
+  the long tail, route top-K nets to a single spawn-based GPU
+  subprocess. Round 1 CPU is already strong on the bulk; GPU is only
+  needed for the few nets where compute > overhead.
+* **Drop V3 GPU entirely, focus elsewhere**: nova V3 4870 s really
+  needs an algorithmic change (Numba/Cython kernel or a fundamentally
+  cheaper closest-pair-with-bbox-edge algorithm), not a tensor lift.
+
+### Locked Round 2 conclusion (2026-05-13 end of session)
+
+The reproducible win on tv80s is:
+* **Round 1 (V3-A=512 + V3-C + adaptive chunksize)**: pipeline 169 → 78 s.
+* **+ V4-A schema v4 cache**: pipeline 78 → 58 s (tv80s only — nova
+  blocked by ~200 GB cuboid array and ~600 GB RAM-during-build).
+
+On nova, **only Round 1 is committed** (8059 → 7182 s, 11 %).
+Round 2.1 (V4-A) and Round 2.2 (V3 GPU) prototypes are in tree but
+gated off — each needs the next-iteration redesigns above before they
+beat CPU multi-proc on nova scale.
+
+End-to-end comparison data the user requested:
+
+| Run | tv80s pipeline | tv80s V3 / V4 | nova pipeline | nova MAPE_tot drift |
+|---|---:|---:|---:|---:|
+| Baseline (pre-patch) | 169.5 s | 69.8 / 87.7 | 8059 s | – |
+| Round 1 (committed) | 78.0 s | 16.5 / 56.3 | 7182 s | +0.003 pp ✅ |
+| + V4-A (tv80s only) | 57.9 s | 13.2 / 37.7 | n/a | tot −0.01 pp ✅ |
+| + V3 GPU batched | 75.0 s | 28.4 / 37.6 | killed @ 1024 nets | n/a |
 
 ### Round 3 — optional ceiling pushes (only if Round 2 leaves headroom)
 

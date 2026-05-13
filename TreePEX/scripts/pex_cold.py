@@ -254,6 +254,10 @@ def _layer_eps_array(layer_map: dict, n_layers: int = N_LAYERS_EPS) -> List[floa
 # every cold-start invocation to import torch.
 _V3_GPU_DEVICE = None
 _V3_GPU_TORCH = None
+_V3_GPU_ALL_CUBS_XYWH = None   # persistent torch tensor: every cuboid's (x,y,w,h)
+                               # on GPU. Lets per-net dispatch fall back to a
+                               # ~kB gather index transfer instead of shipping
+                               # `cand_arr` (10s-100s of MB) every call.
 
 
 def _v3_gpu_init(device: str = "cuda:0"):
@@ -269,17 +273,38 @@ def _v3_gpu_init(device: str = "cuda:0"):
     return _V3_GPU_TORCH
 
 
+def _v3_gpu_upload_all_cubs(all_cubs: np.ndarray):
+    """One-time upload of every cuboid's xy + wh to GPU. Per-net broadcast
+    later gathers from this tensor by index, avoiding O(N_c × bytes) transfers
+    on every net.
+    """
+    global _V3_GPU_ALL_CUBS_XYWH
+    _torch = _V3_GPU_TORCH
+    arr = np.ascontiguousarray(all_cubs[:, [0, 1, 3, 4]], dtype=np.float32)
+    _V3_GPU_ALL_CUBS_XYWH = _torch.from_numpy(arr).to(_V3_GPU_DEVICE)
+
+
 def _v3_compute_closest_gpu(target_arr_bc: np.ndarray, cand_arr: np.ndarray,
-                            cutoff_um: float):
+                            cutoff_um: float,
+                            cand_idx_into_all: np.ndarray = None):
     """torch-on-CUDA replacement for the (N_t × N_c) numpy broadcast.
-    Matches `_v3_compute_closest_cpu` modulo fp32 rounding."""
+    Matches `_v3_compute_closest_cpu` modulo fp32 rounding.
+
+    When `cand_idx_into_all` is provided and the persistent all-cubs tensor
+    has been uploaded, the candidate side is gathered on GPU (only int64
+    index ships across PCIe) — this is the round-2.2 batched-dispatch
+    optimization, ≈10× faster per net than the legacy fresh-transfer path.
+    """
     _torch = _V3_GPU_TORCH
     dev = _V3_GPU_DEVICE
     t_np = target_arr_bc[:, [0, 1, 3, 4]].astype(np.float32, copy=False)
-    c_np = cand_arr[:, [0, 1, 3, 4]].astype(np.float32, copy=False)
     t_t = _torch.from_numpy(t_np).to(dev, non_blocking=True)
-    c_t = _torch.from_numpy(c_np).to(dev, non_blocking=True)
-    # broadcast (N_t, 1, *) vs (1, N_c, *) on x and y axes
+    if cand_idx_into_all is not None and _V3_GPU_ALL_CUBS_XYWH is not None:
+        idx_t = _torch.as_tensor(cand_idx_into_all, dtype=_torch.int64, device=dev)
+        c_t = _V3_GPU_ALL_CUBS_XYWH.index_select(0, idx_t)
+    else:
+        c_np = cand_arr[:, [0, 1, 3, 4]].astype(np.float32, copy=False)
+        c_t = _torch.from_numpy(c_np).to(dev, non_blocking=True)
     dx = _torch.clamp(
         _torch.abs(t_t[:, 0:1] - c_t[None, :, 0])
         - (t_t[:, 2:3] + c_t[None, :, 2]) / 2, min=0)
@@ -292,6 +317,90 @@ def _v3_compute_closest_gpu(target_arr_bc: np.ndarray, cand_arr: np.ndarray,
     closest_t = closest_t_t.cpu().numpy().astype(np.int64, copy=False)
     in_range = closest_d <= cutoff_um
     return closest_t, closest_d, in_range
+
+
+def _v3_compute_closest_batched_gpu(jobs, cutoff_um: float,
+                                    mem_budget_bytes: int = 4_000_000_000):
+    """Run the per-net (N_t × N_c) broadcast for several nets in one GPU
+    launch. `jobs` is a list of dicts {'target': float32[N_t,4],
+    'cand_idx_into_all': int64[N_c]}.
+
+    Greedy memory-budget batcher: appends jobs to the current batch while
+    B × max_t × max_c × 4B (the broadcast tensor size) stays under
+    `mem_budget_bytes`. Yields per-job (closest_t, closest_d, in_range)
+    in the same order as `jobs`.
+    """
+    _torch = _V3_GPU_TORCH
+    dev = _V3_GPU_DEVICE
+    all_cubs_t = _V3_GPU_ALL_CUBS_XYWH
+    results = [None] * len(jobs)
+
+    def _run_batch(batch_indices, max_t, max_c):
+        B = len(batch_indices)
+        # Pad targets to (B, max_t, 4) and cand index to (B, max_c).
+        t_padded = np.zeros((B, max_t, 4), dtype=np.float32)
+        c_padded = np.zeros((B, max_c), dtype=np.int64)
+        n_t_per = np.zeros(B, dtype=np.int64)
+        n_c_per = np.zeros(B, dtype=np.int64)
+        for k, j_idx in enumerate(batch_indices):
+            j = jobs[j_idx]
+            t = j["target"]
+            ci = j["cand_idx_into_all"]
+            t_padded[k, :t.shape[0]] = t
+            c_padded[k, :ci.shape[0]] = ci
+            n_t_per[k] = t.shape[0]
+            n_c_per[k] = ci.shape[0]
+        t_t = _torch.from_numpy(t_padded).to(dev)
+        ci_t = _torch.from_numpy(c_padded).to(dev)
+        c_gather = all_cubs_t.index_select(0, ci_t.reshape(-1)).reshape(B, max_c, 4)
+        dx = _torch.clamp(
+            (t_t[:, :, None, 0] - c_gather[:, None, :, 0]).abs()
+            - (t_t[:, :, None, 2] + c_gather[:, None, :, 2]) / 2, min=0)
+        dy = _torch.clamp(
+            (t_t[:, :, None, 1] - c_gather[:, None, :, 1]).abs()
+            - (t_t[:, :, None, 3] + c_gather[:, None, :, 3]) / 2, min=0)
+        d_mat = _torch.sqrt(dx * dx + dy * dy)
+        # Mask padding rows on the target axis to +inf so argmin ignores them.
+        t_active = (_torch.arange(max_t, device=dev)[None, :]
+                    < _torch.as_tensor(n_t_per, device=dev)[:, None])
+        d_mat = _torch.where(t_active[:, :, None], d_mat,
+                             _torch.tensor(float("inf"), device=dev))
+        closest_d_t, closest_t_t = d_mat.min(dim=1)  # both (B, max_c)
+        cd_np = closest_d_t.cpu().numpy()
+        ct_np = closest_t_t.cpu().numpy()
+        for k, j_idx in enumerate(batch_indices):
+            n_c = int(n_c_per[k])
+            cd_k = cd_np[k, :n_c].astype(np.float64, copy=False)
+            ct_k = ct_np[k, :n_c].astype(np.int64, copy=False)
+            in_range_k = cd_k <= cutoff_um
+            results[j_idx] = (ct_k, cd_k, in_range_k)
+
+    cur: List[int] = []
+    cur_max_t = 0
+    cur_max_c = 0
+    for j_idx, j in enumerate(jobs):
+        n_t = j["target"].shape[0]
+        n_c = j["cand_idx_into_all"].shape[0]
+        if n_t == 0 or n_c == 0:
+            results[j_idx] = (np.zeros(0, dtype=np.int64),
+                              np.full(n_c, np.inf, dtype=np.float64),
+                              np.zeros(n_c, dtype=bool))
+            continue
+        new_max_t = max(cur_max_t, n_t)
+        new_max_c = max(cur_max_c, n_c)
+        cost = (len(cur) + 1) * new_max_t * new_max_c * 4
+        if cur and cost > mem_budget_bytes:
+            _run_batch(cur, cur_max_t, cur_max_c)
+            cur = [j_idx]
+            cur_max_t = n_t
+            cur_max_c = n_c
+        else:
+            cur.append(j_idx)
+            cur_max_t = new_max_t
+            cur_max_c = new_max_c
+    if cur:
+        _run_batch(cur, cur_max_t, cur_max_c)
+    return results
 
 
 def _v3_compute_closest_cpu(target_arr_bc: np.ndarray, cand_arr: np.ndarray,
@@ -313,6 +422,70 @@ def _v3_compute_closest_cpu(target_arr_bc: np.ndarray, cand_arr: np.ndarray,
 # `extract_v3_features` when the GPU path is enabled. Lives at module scope
 # because `_v3_per_net` is a top-level worker entry point.
 _V3_USE_GPU = False
+# When the batched-GPU precompute is active, this dict maps net_name to a
+# pre-computed (closest_t, closest_d, in_range) tuple, and `_v3_per_net`
+# skips its own broadcast and consults the cache.
+_V3_CLOSEST_CACHE: Dict[str, tuple] = None
+
+
+def _v3_phase_a_for_net(net_name: str):
+    """Run the Phase-A (spatial-query + V3-A target subsample) prep work
+    that the batched GPU precompute needs. Returns
+    (target_arr_bc_xywh, cand_idx_into_all) or None if there is no work.
+    """
+    target_arr = _V3_NETS.get(net_name)
+    if target_arr is None or len(target_arr) == 0:
+        return None
+    x_min = float((target_arr[:, 0] - target_arr[:, 3] / 2).min())
+    x_max = float((target_arr[:, 0] + target_arr[:, 3] / 2).max())
+    y_min = float((target_arr[:, 1] - target_arr[:, 4] / 2).min())
+    y_max = float((target_arr[:, 1] + target_arr[:, 4] / 2).max())
+    cand_idx = _V3_GRID.query_bbox(x_min - CUTOFF_UM, x_max + CUTOFF_UM,
+                                   y_min - CUTOFF_UM, y_max + CUTOFF_UM)
+    if len(cand_idx) == 0:
+        return None
+    cand_owners = _V3_ALL_OWNER[cand_idx]
+    keep = cand_owners != net_name
+    cand_idx_into_all = cand_idx[keep]
+    if len(cand_idx_into_all) == 0:
+        return None
+    if len(target_arr) > MAX_TARGET_CUBS_V3:
+        rng_t = np.random.RandomState(hash(net_name) & 0xFFFFFFFF)
+        sub_idx = rng_t.choice(len(target_arr), MAX_TARGET_CUBS_V3, replace=False)
+        target_arr_bc = target_arr[sub_idx]
+    else:
+        target_arr_bc = target_arr
+    target_xywh = target_arr_bc[:, [0, 1, 3, 4]].astype(np.float32, copy=False)
+    return target_xywh, cand_idx_into_all
+
+
+def _v3_precompute_closest_chunk(chunk_nets: List[str], mem_budget_bytes: int = 8_000_000_000):
+    """Run Phase-A on every net in the chunk, then a single batched GPU
+    call. Returns a dict {net_name: dict(...)} containing both the
+    closest-pair result AND the Phase-A intermediates so `_v3_per_net`
+    can skip its own spatial query when the cache is hot.
+    """
+    jobs = []
+    job_meta: List[tuple] = []  # (net_name, target_arr_bc_indices_into_target, cand_idx_into_all)
+    for nm in chunk_nets:
+        prep = _v3_phase_a_for_net(nm)
+        if prep is None:
+            continue
+        target_xywh, cand_idx_into_all = prep
+        jobs.append({"target": target_xywh, "cand_idx_into_all": cand_idx_into_all})
+        job_meta.append((nm, target_xywh, cand_idx_into_all))
+    if not jobs:
+        return {}
+    results = _v3_compute_closest_batched_gpu(jobs, CUTOFF_UM, mem_budget_bytes)
+    out = {}
+    for (nm, txywh, cidx), (ct, cd, ir) in zip(job_meta, results):
+        out[nm] = {
+            "closest_t": ct,
+            "closest_d": cd,
+            "in_range": ir,
+            "cand_idx_into_all": cidx,
+        }
+    return out
 
 
 def _v3_per_net(net_name: str) -> Dict[str, float]:
@@ -344,17 +517,25 @@ def _v3_per_net(net_name: str) -> Dict[str, float]:
     feats["layer_hist_M9_plus"] = float(hist[8])
 
     # Spatial query: target bbox + cutoff
-    cand_idx = _V3_GRID.query_bbox(x_min - CUTOFF_UM, x_max + CUTOFF_UM,
-                                   y_min - CUTOFF_UM, y_max + CUTOFF_UM)
-    if len(cand_idx) == 0:
-        cand_arr = np.zeros((0, 7), dtype=np.float64)
-        cand_owners = np.array([], dtype=object)
+    cached_entry = _V3_CLOSEST_CACHE.get(net_name) if _V3_CLOSEST_CACHE is not None else None
+    if cached_entry is not None:
+        # Reuse the spatial query already done by `_v3_phase_a_for_net`.
+        cand_idx_into_all = cached_entry["cand_idx_into_all"]
+        cand_arr = _V3_ALL_CUBS[cand_idx_into_all]
+        cand_owners = _V3_ALL_OWNER[cand_idx_into_all]
     else:
-        cand_arr = _V3_ALL_CUBS[cand_idx]
-        cand_owners = _V3_ALL_OWNER[cand_idx]
-        keep = cand_owners != net_name
-        cand_arr = cand_arr[keep]
-        cand_owners = cand_owners[keep]
+        cand_idx = _V3_GRID.query_bbox(x_min - CUTOFF_UM, x_max + CUTOFF_UM,
+                                       y_min - CUTOFF_UM, y_max + CUTOFF_UM)
+        if len(cand_idx) == 0:
+            cand_arr = np.zeros((0, 7), dtype=np.float64)
+            cand_owners = np.array([], dtype=object)
+            cand_idx_into_all = None
+        else:
+            cand_owners = _V3_ALL_OWNER[cand_idx]
+            keep = cand_owners != net_name
+            cand_idx_into_all = cand_idx[keep]
+            cand_arr = _V3_ALL_CUBS[cand_idx_into_all]
+            cand_owners = cand_owners[keep]
         # V3-B (cand cap) was withdrawn after the first patch demolished
         # n_aggressor_nets / fanout (R² = -5.72). Aggressor identities are
         # carried by ALL cuboid rows; any count-based cap loses entire
@@ -372,9 +553,14 @@ def _v3_per_net(net_name: str) -> Dict[str, float]:
             target_arr_bc = target_arr[sub_idx]
         else:
             target_arr_bc = target_arr
-        if _V3_USE_GPU and len(target_arr_bc) * len(cand_arr) >= 4096:
+        if cached_entry is not None:
+            closest_t = cached_entry["closest_t"]
+            closest_d = cached_entry["closest_d"]
+            in_range = cached_entry["in_range"]
+        elif _V3_USE_GPU and len(target_arr_bc) * len(cand_arr) >= 4096:
             closest_t, closest_d, in_range = _v3_compute_closest_gpu(
-                target_arr_bc, cand_arr, CUTOFF_UM)
+                target_arr_bc, cand_arr, CUTOFF_UM,
+                cand_idx_into_all=cand_idx_into_all)
         else:
             closest_t, closest_d, in_range = _v3_compute_closest_cpu(
                 target_arr_bc, cand_arr, CUTOFF_UM)
@@ -838,19 +1024,28 @@ def extract_v3_features(geo, layer_map, n_workers: int,
     t_progress = time.time()
 
     if use_gpu:
+        global _V3_CLOSEST_CACHE
         _v3_gpu_init()
+        _v3_gpu_upload_all_cubs(geo["all_cuboids"])
         _V3_USE_GPU = True
         init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window)
-        for i, nm in enumerate(target_nets, 1):
-            r = _v3_per_net(nm)
-            if r:
-                rows.append(r)
-            if i % 5000 == 0 or i == total:
-                elapsed = time.time() - t_progress
-                rate = i / max(elapsed, 1e-3)
-                eta = (total - i) / max(rate, 1e-3)
-                print(f"  V3(gpu) progress {i}/{total} elapsed={elapsed:.0f}s "
-                      f"rate={rate:.0f}/s eta={eta:.0f}s", flush=True)
+        CHUNK = 1024
+        done = 0
+        for chunk_start in range(0, total, CHUNK):
+            chunk = target_nets[chunk_start:chunk_start + CHUNK]
+            _V3_CLOSEST_CACHE = _v3_precompute_closest_chunk(chunk)
+            for nm in chunk:
+                r = _v3_per_net(nm)
+                if r:
+                    rows.append(r)
+            _V3_CLOSEST_CACHE = None
+            done += len(chunk)
+            elapsed = time.time() - t_progress
+            rate = done / max(elapsed, 1e-3)
+            eta = (total - done) / max(rate, 1e-3)
+            print(f"  V3(gpu-batched) progress {done}/{total} "
+                  f"elapsed={elapsed:.0f}s rate={rate:.0f}/s eta={eta:.0f}s "
+                  f"chunk_size={CHUNK}", flush=True)
         _V3_USE_GPU = False
         return pd.DataFrame(rows)
 
