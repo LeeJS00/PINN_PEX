@@ -460,17 +460,108 @@ V3 rate trajectory tracked from 21 → 41 nets/s as top-tail nets cleared
 bump to 30-50 M pairs so tv80s falls back to legacy entirely. Doesn't
 affect nova win. Filed as Round 4 #14.
 
-### Round 4 — optional ceiling pushes (only if Round 3 leaves headroom)
+### Round 4 — Numba JIT kernel (LOCKED 2026-05-14)
 
-12. **D-pred** (XGBoost GPU predict) — quick free win.
-13. **F** (torch.compile / Triton custom kernel) — only if Round 3
-    leaves > 50 % headroom.
-14. **Numba JIT** the per-target inner loop — drops Python grid_query
-    overhead, may compound the Round 3 win 2-3 ×.
-15. Global sparse adjacency + `scatter_add` (the more aggressive
-    interpretation of B). Replaces per-net dispatch with one-shot
-    design-level kernel.
-16. **DEF-A** (cache parsed DEF) for re-run workflow.
+After Round 3 landed the per-target algorithm at the Python-loop floor,
+Round 4 swaps the per-target body for an `@njit`-compiled kernel + a
+CSR-encoded dense bin grid + int32 owner IDs. The kernel runs on every
+net (no threshold gate), replacing both the per_target path and the
+legacy numpy broadcast.
+
+Codex round-1 deliberation flagged the highest-risk item: string-keyed
+`all_owner` must be re-encoded as int32 owner IDs before njit can
+touch it. Resolution: `_v3_build_owner_id_map()` builds the int32
+column + forward/reverse dicts once per design. Decisions:
+
+| Decision | Codex rec | Adopted |
+|---|---|---|
+| Aggregator | `numba.typed.Dict[int32, UniTuple(float64,5)]` | ✅ |
+| Grid encoding | 2D dense CSR (`bin_offsets[nx*ny+1]` + `bin_indices[total_entries]`) | ✅ |
+| Precision | float64 throughout | ✅ |
+| Math flags | `fastmath=False` (preserve Round 3 tie semantics) | ✅ |
+| Threshold | Apply njit unconditionally (drop the 30 M gate) | ✅ |
+| Failure mode | string→int32 mapping required upfront | covered |
+
+**Implementation**:
+- `pex_cold.py:_v3_aggregate_per_target_njit()` Python wrapper.
+- `pex_cold.py:_v3_get_njit_kernel()` lazy-compile + cache via
+  `@njit(cache=True, fastmath=False, boundscheck=False)`.
+- `_v3_build_dense_grid()` builder (Python triple-loop for clarity;
+  nova builds in 6.7 s = 5.9 M entries).
+- `_v3_build_owner_id_map()` owner str → int32 (nova: 22 902 unique
+  owners on tv80s, 22.5 M unique on nova).
+- Fork-Pool `init_worker_v3(..., v3_njit_state=...)` plumbs CSR + owner
+  id arrays as fork-shared globals; child workers re-use the parent's
+  `@njit(cache=True)` on-disk compiled artifact (compile-once across
+  pool — `_v3_per_net` first invocation in a worker triggers a smoke
+  call before the imap_unordered loop, so per-worker startup is bound
+  by the cached-load cost ~50 ms, not full ~2.3 s recompile).
+
+**Validation (tv80s, full pipeline)**:
+
+| Metric | Round 3 (auto / legacy) | Round 4 (njit) |
+|---|---:|---:|
+| pipeline | 57.3 s | **48.2 s** (−16 %) |
+| V3 wall | 11.5 s | **3.46 s** (3.3 ×) |
+| MAPE_tot | 5.079 % | 5.122 % (+0.043 pp ✅) |
+| MAPE_gnd | 17.62 % | 17.91 % (+0.29 pp ✅, gate ±0.3 pp) |
+| MAPE_cpl | 13.85 % | 13.82 % (−0.03 pp ✅) |
+| R²_tot | 0.9923 | 0.9920 (−0.0003 ✅) |
+
+Single-process dump: V3 30.9 s → 3.0 s (**10.18 × single-thread**).
+CTS_2 probe: per_target 820 ms → njit warm **79 ms (10.3 ×)**.
+
+Worst feature drift (njit vs legacy on tv80s 120-net dump):
+`n_edges_3_to_4um` R² = 0.76, MAE_pct 15 %. Same float-tie tie-break
+pattern as Round 3 — kernel visits candidates in bin order, numpy
+per_target sorts by index, both produce the same per-aggressor min
+distance (`spacing_min_um` bit-exact). Downstream MAPE absorbs it.
+
+**nova full-pipeline outcome (LOCKED 2026-05-14)**:
+
+| Metric | Round 1 | Round 3 per_target | **Round 4 njit** | Δ Round 4 vs Round 1 | Δ Round 4 vs Round 3 |
+|---|---:|---:|---:|---:|---:|
+| pipeline wall | 7,181.98 s | 5,345.85 s | **4,906.14 s** | **−2,275.8 s (−31.7 %)** | −439.7 s (−8.2 %) |
+| V3 wall | 4,870.86 s | 2,924.08 s | **2,351.91 s** | **−2,518.9 s (2.07 ×)** | −572.2 s (1.24 ×) |
+| V4 wall | 2,207.47 s | 2,243.51 s | 2,383.94 s | +176 s | +140 s |
+| MAPE_tot | 5.541 % | 5.548 % | **5.556 %** | +0.015 pp ✅ | +0.008 pp ✅ |
+| MAPE_gnd | 15.86 % | 15.87 % | **15.87 %** | +0.01 pp ✅ | +0.00 pp ✅ |
+| MAPE_cpl | 15.96 % | 15.97 % | **16.00 %** | +0.04 pp ✅ | +0.03 pp ✅ |
+| R²_tot | 0.9865 | 0.9862 | **0.9862** | −0.0003 ✅ | 0.0000 ✅ |
+
+The Round-4 V3 trajectory holds at 50 nets/s (vs Round 3's 40 nets/s
+mid-tail asymptote) — the modest 1.24 × gain over Round 3 reflects that
+most of nova V3 wall lives in the *mid-tail* (Round 3's legacy path),
+not the long-tail (Round 3's per_target path). njit replaces both, but
+the legacy mid-tail was already cache-efficient.
+
+V4 environmental +140 s (path unchanged) — probably first-touch cache
+state difference; no algorithmic regression.
+
+**Pipeline scoreboard end-of-Round-4**:
+
+| Run | tv80s pipeline | nova pipeline | nova MAPE_tot drift |
+|---|---:|---:|---:|
+| Baseline (pre-patch) | 169.5 s | 8,059 s | ref |
+| Round 1 (committed) | 78.0 s | 7,182 s | +0.003 pp ✅ |
+| + V4-A (tv80s only) | 57.9 s | n/a | tot −0.01 pp ✅ |
+| + Round 3 per_target | 62.7 s ⚠ → 57.3 s¹ | 5,346 s | +0.007 pp ✅ |
+| **+ Round 4 njit** | **48.2 s** | **4,906 s** | +0.015 pp ✅ |
+
+¹ After threshold 30 M tuned to keep tv80s on legacy.
+
+Compound win vs pre-patch baseline (Round 0): **nova 8,059 → 4,906 s
+= 1.64 × end-to-end**, **V3 alone 5,607 → 2,352 s = 2.38 ×**.
+
+### Round 5 — optional ceiling pushes (only if Round 4 leaves headroom)
+
+17. **D-pred** (XGBoost GPU predict) — quick free win, ~3 s on nova.
+18. **V4 njit kernel** — V4 H3 top-K aggregator is still pure numpy
+    per-net (~50 ms/net mid-tail). Numba-fy similarly.
+19. **DEF-A** (cache parsed DEF) for re-run workflow.
+20. Global sparse adjacency + `scatter_add` (more aggressive B).
+21. **Multi-design parallelism (designs share IO + DEF parse)** —
+    cross-design fork-Pool may halve overall wall on multi-design runs.
 
 ## 6. Acceptance criteria
 

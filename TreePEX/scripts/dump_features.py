@@ -120,8 +120,8 @@ def main():
     ap.add_argument("--out-dir", default=None)
     ap.add_argument("--skip-v4", action="store_true")
     ap.add_argument("--v3-algo", default="auto",
-                    choices=["auto", "per_target", "legacy"],
-                    help="V3 closest-pair backend (Round 3).")
+                    choices=["auto", "per_target", "legacy", "njit"],
+                    help="V3 closest-pair backend (Round 3 + 4 njit).")
     args = ap.parse_args()
     import pex_cold as _px
     _px._V3_PER_TARGET_MODE = args.v3_algo
@@ -159,7 +159,25 @@ def main():
         density_window = max(1.0, (xmax - xmin) * (ymax - ymin))
     else:
         density_window = 1.0
-    init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window)
+    # Round 4 njit setup (only when --v3-algo=njit): build CSR dense grid +
+    # int32 owner id map upfront so the njit kernel has fork-shared data.
+    v3_njit_state = None
+    if args.v3_algo == "njit":
+        owner_id, owner_name_list, owner_name_to_id = _px._v3_build_owner_id_map(
+            geo["all_owner"])
+        dense_grid = _px._v3_build_dense_grid(
+            geo["all_cuboids"], _px.SPATIAL_BIN_UM, _px.SPATIAL_BIN_UM)
+        v3_njit_state = {
+            "all_owner_id": owner_id,
+            "owner_name_list": owner_name_list,
+            "owner_name_to_id": owner_name_to_id,
+            **dense_grid,
+        }
+        print(f"[dump] njit infra: bins={dense_grid['bin_nx']}×"
+              f"{dense_grid['bin_ny']}, entries={len(dense_grid['bin_indices']):,}",
+              flush=True)
+    init_worker_v3(geo, grid, eps_by_layer, density_per_layer,
+                   density_window, v3_njit_state=v3_njit_state)
 
     # V3 per-net feature + runtime
     print(f"[V3] dumping features for {len(chosen)} nets...", flush=True)

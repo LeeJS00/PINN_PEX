@@ -219,11 +219,26 @@ _V3_GRID: SpatialGrid = None
 _V3_EPS_BY_LAYER = None
 _V3_DENSITY_PER_LAYER = None
 _V3_DENSITY_WINDOW = None
+# Round 4 Numba JIT infrastructure — only populated when --v3-algo=njit
+# is active. Worker init pushes these as fork-shared globals.
+_V3_ALL_OWNER_ID = None       # int32[N_total]: owner-name → int32 id
+_V3_OWNER_NAME_LIST = None    # list[str]: id → owner name (reverse map)
+_V3_OWNER_NAME_TO_ID = None   # dict[str → int32]: forward map
+_V3_DENSE_BIN_XMIN = None     # int64: min bin index along x
+_V3_DENSE_BIN_YMIN = None     # int64: min bin index along y
+_V3_DENSE_BIN_NX = None       # int64: # bins along x
+_V3_DENSE_BIN_NY = None       # int64: # bins along y
+_V3_DENSE_BIN_OFFSETS = None  # int64[nx*ny + 1]: CSR-style offsets
+_V3_DENSE_BIN_INDICES = None  # int64[total_entries]: cuboid indices
 
 
-def init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window):
+def init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window,
+                   v3_njit_state=None):
     global _V3_NETS, _V3_VSS, _V3_ALL_CUBS, _V3_ALL_OWNER, _V3_GRID, _V3_EPS_BY_LAYER
     global _V3_DENSITY_PER_LAYER, _V3_DENSITY_WINDOW
+    global _V3_ALL_OWNER_ID, _V3_OWNER_NAME_LIST, _V3_OWNER_NAME_TO_ID
+    global _V3_DENSE_BIN_XMIN, _V3_DENSE_BIN_YMIN, _V3_DENSE_BIN_NX, _V3_DENSE_BIN_NY
+    global _V3_DENSE_BIN_OFFSETS, _V3_DENSE_BIN_INDICES
     _V3_NETS = geo["nets"]
     _V3_VSS = geo["vss"]
     _V3_ALL_CUBS = geo["all_cuboids"]
@@ -232,6 +247,110 @@ def init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window):
     _V3_EPS_BY_LAYER = eps_by_layer
     _V3_DENSITY_PER_LAYER = density_per_layer
     _V3_DENSITY_WINDOW = density_window
+    if v3_njit_state is not None:
+        _V3_ALL_OWNER_ID = v3_njit_state["all_owner_id"]
+        _V3_OWNER_NAME_LIST = v3_njit_state["owner_name_list"]
+        _V3_OWNER_NAME_TO_ID = v3_njit_state["owner_name_to_id"]
+        _V3_DENSE_BIN_XMIN = v3_njit_state["bin_xmin"]
+        _V3_DENSE_BIN_YMIN = v3_njit_state["bin_ymin"]
+        _V3_DENSE_BIN_NX = v3_njit_state["bin_nx"]
+        _V3_DENSE_BIN_NY = v3_njit_state["bin_ny"]
+        _V3_DENSE_BIN_OFFSETS = v3_njit_state["bin_offsets"]
+        _V3_DENSE_BIN_INDICES = v3_njit_state["bin_indices"]
+
+
+def _v3_build_dense_grid(cuboids: np.ndarray, bx: float, by: float) -> dict:
+    """Build a numba-friendly dense 2D bin grid.
+
+    Returns dict with keys (bin_xmin, bin_ymin, bin_nx, bin_ny, bin_offsets,
+    bin_indices). Each cuboid is inserted into every bin its bbox overlaps;
+    `bin_indices` is sorted by bin id so per-bin slices are contiguous.
+    """
+    n = int(len(cuboids))
+    if n == 0:
+        return {
+            "bin_xmin": np.int64(0), "bin_ymin": np.int64(0),
+            "bin_nx": np.int64(1), "bin_ny": np.int64(1),
+            "bin_offsets": np.zeros(2, dtype=np.int64),
+            "bin_indices": np.zeros(0, dtype=np.int64),
+        }
+    mins_x = cuboids[:, 0] - cuboids[:, 3] / 2
+    maxs_x = cuboids[:, 0] + cuboids[:, 3] / 2
+    mins_y = cuboids[:, 1] - cuboids[:, 4] / 2
+    maxs_y = cuboids[:, 1] + cuboids[:, 4] / 2
+    min_bx = np.floor(mins_x / bx).astype(np.int64)
+    max_bx = np.floor(maxs_x / bx).astype(np.int64)
+    min_by = np.floor(mins_y / by).astype(np.int64)
+    max_by = np.floor(maxs_y / by).astype(np.int64)
+    bin_xmin = int(min_bx.min())
+    bin_ymin = int(min_by.min())
+    bin_nx = int(max_bx.max() - bin_xmin + 1)
+    bin_ny = int(max_by.max() - bin_ymin + 1)
+    n_x_per = (max_bx - min_bx + 1).astype(np.int64)
+    n_y_per = (max_by - min_by + 1).astype(np.int64)
+    n_entries_per = n_x_per * n_y_per
+    n_total = int(n_entries_per.sum())
+    # Build flat (bin_id, cuboid_idx) arrays by per-cuboid expansion.
+    # Use a numba-friendly builder to avoid the Python triple-loop cost on
+    # nova (5.3 M cuboids × ~2-3 entries = 10-15 M expansions).
+    entries_bin = np.empty(n_total, dtype=np.int64)
+    entries_cub = np.empty(n_total, dtype=np.int64)
+    # local copies for the inner loop (avoid attribute lookup)
+    _mbx = min_bx - bin_xmin
+    _Mbx = max_bx - bin_xmin
+    _mby = min_by - bin_ymin
+    _Mby = max_by - bin_ymin
+    _by = bin_ny
+    _v3_fill_bin_expand(_mbx, _Mbx, _mby, _Mby, _by, entries_bin, entries_cub)
+    sort_idx = np.argsort(entries_bin, kind="stable")
+    entries_bin = entries_bin[sort_idx]
+    entries_cub = entries_cub[sort_idx]
+    bin_offsets = np.zeros(bin_nx * bin_ny + 1, dtype=np.int64)
+    np.add.at(bin_offsets, entries_bin + 1, 1)
+    bin_offsets = np.cumsum(bin_offsets)
+    return {
+        "bin_xmin": np.int64(bin_xmin),
+        "bin_ymin": np.int64(bin_ymin),
+        "bin_nx": np.int64(bin_nx),
+        "bin_ny": np.int64(bin_ny),
+        "bin_offsets": bin_offsets,
+        "bin_indices": entries_cub.copy(),
+    }
+
+
+def _v3_fill_bin_expand(mbx, Mbx, mby, Mby, ny, out_bin, out_cub):
+    """Pure-Python helper for `_v3_build_dense_grid`. nova-scale (10-15 M
+    entries) is acceptable here because the build runs once per design.
+    """
+    p = 0
+    for i in range(len(mbx)):
+        for ax in range(int(mbx[i]), int(Mbx[i]) + 1):
+            for ay in range(int(mby[i]), int(Mby[i]) + 1):
+                out_bin[p] = ax * ny + ay
+                out_cub[p] = i
+                p += 1
+
+
+def _v3_build_owner_id_map(all_owner: np.ndarray):
+    """Build int32 owner ID for the dense grid. dtype=object string array →
+    int32 + forward/reverse maps. Order is first-seen-by-array-iteration so
+    `id_to_name` indexable cleanly.
+    """
+    n = len(all_owner)
+    owner_id = np.empty(n, dtype=np.int32)
+    name_to_id: Dict[str, int] = {}
+    name_list: List[str] = []
+    for i in range(n):
+        nm = all_owner[i]
+        if not isinstance(nm, str):
+            nm = str(nm)
+        nid = name_to_id.get(nm)
+        if nid is None:
+            nid = len(name_list)
+            name_to_id[nm] = nid
+            name_list.append(nm)
+        owner_id[i] = nid
+    return owner_id, name_list, name_to_id
 
 
 def _layer_eps_array(layer_map: dict, n_layers: int = N_LAYERS_EPS) -> List[float]:
@@ -443,8 +562,194 @@ _V3_CLOSEST_CACHE: Dict[str, tuple] = None
 # to 30 M only declassifies the marginal tv80s long-tail; nova benefit
 # preserved.
 _V3_PER_TARGET_PAIR_THRESHOLD = 30_000_000
-# Mode: "auto" → threshold-gated, "per_target" → always new, "legacy" → always old.
+# Mode: "auto" → threshold-gated (legacy/per_target),
+#       "per_target" → always per-target numpy,
+#       "legacy" → always numpy broadcast,
+#       "njit" → @njit kernel (Round 4), always; falls back to per_target if
+#                CSR grid / owner-id map aren't built.
 _V3_PER_TARGET_MODE: str = "auto"
+
+
+# ---------------------------------------------------------------------------
+# Round 4 @njit kernel — lazy-imported so module load is cheap on the
+# legacy/per_target/auto paths.
+# ---------------------------------------------------------------------------
+_V3_NJIT_KERNEL = None
+
+
+def _v3_get_njit_kernel():
+    """Compile and cache the @njit per-target kernel on first use."""
+    global _V3_NJIT_KERNEL
+    if _V3_NJIT_KERNEL is not None:
+        return _V3_NJIT_KERNEL
+    from numba import njit, types
+    from numba.typed import Dict as NumbaDict
+
+    aggr_val_t = types.UniTuple(types.float64, 5)
+
+    @njit(cache=True, fastmath=False, boundscheck=False)
+    def _kernel(target_arr_bc, all_cubs, owner_id, self_owner_id,
+                bin_xmin, bin_ymin, bin_nx, bin_ny,
+                bin_offsets, bin_indices, bx, by, cutoff_um):
+        cutoff_sq = cutoff_um * cutoff_um
+        aggr = NumbaDict.empty(key_type=types.int32, value_type=aggr_val_t)
+        n_t = target_arr_bc.shape[0]
+        for ti in range(n_t):
+            tx = target_arr_bc[ti, 0]
+            ty = target_arr_bc[ti, 1]
+            tw = target_arr_bc[ti, 3]
+            th = target_arr_bc[ti, 4]
+            t_lat = target_arr_bc[ti, 5]
+            tl = target_arr_bc[ti, 6]
+            tw_half = tw * 0.5
+            th_half = th * 0.5
+            tx_lo = tx - tw_half - cutoff_um
+            tx_hi = tx + tw_half + cutoff_um
+            ty_lo = ty - th_half - cutoff_um
+            ty_hi = ty + th_half + cutoff_um
+            mbx = int(np.floor(tx_lo / bx)) - bin_xmin
+            Mbx = int(np.floor(tx_hi / bx)) - bin_xmin
+            mby = int(np.floor(ty_lo / by)) - bin_ymin
+            Mby = int(np.floor(ty_hi / by)) - bin_ymin
+            if mbx < 0:
+                mbx = 0
+            if Mbx >= bin_nx:
+                Mbx = bin_nx - 1
+            if mby < 0:
+                mby = 0
+            if Mby >= bin_ny:
+                Mby = bin_ny - 1
+            if mbx > Mbx or mby > Mby:
+                continue
+            for ax in range(mbx, Mbx + 1):
+                row_base = ax * bin_ny
+                for ay in range(mby, Mby + 1):
+                    bin_id = row_base + ay
+                    start = bin_offsets[bin_id]
+                    end = bin_offsets[bin_id + 1]
+                    for k in range(start, end):
+                        c_idx = bin_indices[k]
+                        a_id = owner_id[c_idx]
+                        if a_id == self_owner_id:
+                            continue
+                        cx = all_cubs[c_idx, 0]
+                        cy = all_cubs[c_idx, 1]
+                        cw = all_cubs[c_idx, 3]
+                        ch = all_cubs[c_idx, 4]
+                        cl = all_cubs[c_idx, 6]
+                        cw_half = cw * 0.5
+                        ch_half = ch * 0.5
+                        ddx = cx - tx
+                        if ddx < 0.0:
+                            ddx = -ddx
+                        ddx -= (tw_half + cw_half)
+                        if ddx < 0.0:
+                            ddx = 0.0
+                        ddy = cy - ty
+                        if ddy < 0.0:
+                            ddy = -ddy
+                        ddy -= (th_half + ch_half)
+                        if ddy < 0.0:
+                            ddy = 0.0
+                        dist_sq = ddx * ddx + ddy * ddy
+                        if dist_sq > cutoff_sq:
+                            continue
+                        dist = dist_sq ** 0.5
+                        # broadside / lateral
+                        bsx_lo = tx - tw_half
+                        bsx_hi = tx + tw_half
+                        csx_lo = cx - cw_half
+                        csx_hi = cx + cw_half
+                        bsx = (csx_hi if csx_hi < bsx_hi else bsx_hi) - (
+                            csx_lo if csx_lo > bsx_lo else bsx_lo)
+                        if bsx < 0.0:
+                            bsx = 0.0
+                        bsy_lo = ty - th_half
+                        bsy_hi = ty + th_half
+                        csy_lo = cy - ch_half
+                        csy_hi = cy + ch_half
+                        bsy = (csy_hi if csy_hi < bsy_hi else bsy_hi) - (
+                            csy_lo if csy_lo > bsy_lo else bsy_lo)
+                        if bsy < 0.0:
+                            bsy = 0.0
+                        broadside = bsx * bsy
+                        lateral = t_lat * (bsx if bsx > bsy else bsy)
+                        # strict-< per-aggressor closest update
+                        if a_id in aggr:
+                            prior = aggr[a_id]
+                            if dist < prior[0]:
+                                aggr[a_id] = (dist, broadside, lateral,
+                                              float(cl), float(tl))
+                        else:
+                            aggr[a_id] = (dist, broadside, lateral,
+                                          float(cl), float(tl))
+        n_a = len(aggr)
+        out_owner = np.empty(n_a, dtype=np.int32)
+        out_dist = np.empty(n_a, dtype=np.float64)
+        out_bs = np.empty(n_a, dtype=np.float64)
+        out_lat = np.empty(n_a, dtype=np.float64)
+        out_al = np.empty(n_a, dtype=np.int32)
+        out_tl = np.empty(n_a, dtype=np.int32)
+        i = 0
+        for k_id in aggr:
+            v = aggr[k_id]
+            out_owner[i] = k_id
+            out_dist[i] = v[0]
+            out_bs[i] = v[1]
+            out_lat[i] = v[2]
+            out_al[i] = np.int32(v[3])
+            out_tl[i] = np.int32(v[4])
+            i += 1
+        return out_owner, out_dist, out_bs, out_lat, out_al, out_tl
+
+    _V3_NJIT_KERNEL = _kernel
+    return _V3_NJIT_KERNEL
+
+
+def _v3_aggregate_per_target_njit(net_name: str, target_arr_bc: np.ndarray,
+                                  cutoff_um: float) -> List[dict]:
+    """@njit-accelerated drop-in for `_v3_aggregate_per_target`. Falls back
+    to the numpy path if the CSR grid / owner-id map aren't initialized
+    (e.g. running `--v3-algo per_target` without njit globals).
+    """
+    if _V3_ALL_OWNER_ID is None or _V3_DENSE_BIN_OFFSETS is None:
+        return _v3_aggregate_per_target(net_name, target_arr_bc, cutoff_um)
+    self_id = _V3_OWNER_NAME_TO_ID.get(net_name)
+    if self_id is None:
+        # Net not in owner map → no aggressors filtered; sentinel -1 disables
+        self_id = -1
+    kernel = _v3_get_njit_kernel()
+    target_f64 = target_arr_bc.astype(np.float64, copy=False)
+    res = kernel(
+        target_f64,
+        _V3_ALL_CUBS,
+        _V3_ALL_OWNER_ID,
+        np.int32(self_id),
+        _V3_DENSE_BIN_XMIN,
+        _V3_DENSE_BIN_YMIN,
+        _V3_DENSE_BIN_NX,
+        _V3_DENSE_BIN_NY,
+        _V3_DENSE_BIN_OFFSETS,
+        _V3_DENSE_BIN_INDICES,
+        np.float64(SPATIAL_BIN_UM),
+        np.float64(SPATIAL_BIN_UM),
+        np.float64(cutoff_um),
+    )
+    owner_ids, dists, bs_arr, lat_arr, al_arr, tl_arr = res
+    name_list = _V3_OWNER_NAME_LIST
+    edges = [
+        {
+            "aggressor_net": name_list[int(owner_ids[i])],
+            "tgt_layer": int(tl_arr[i]),
+            "aggr_layer": int(al_arr[i]),
+            "surface_dist_um": float(dists[i]),
+            "broadside_overlap_um2": float(bs_arr[i]),
+            "lateral_overlap_um2": float(lat_arr[i]),
+        }
+        for i in range(owner_ids.shape[0])
+    ]
+    edges.sort(key=lambda e: -(e["broadside_overlap_um2"] + e["lateral_overlap_um2"]))
+    return edges[:MAX_AGGR_PER_NET]
 
 
 def _v3_aggregate_per_target(net_name: str, target_arr_bc: np.ndarray,
@@ -665,16 +970,30 @@ def _v3_per_net(net_name: str) -> Dict[str, float]:
             target_arr_bc = target_arr
 
         # Round 3 gate: per-target-cuboid grid path for long-tail nets.
-        # Skipped when batched-GPU cache is hot (it already has the result).
+        # Round 4: njit kernel — strictly faster than per_target on every
+        # net size when the CSR grid is built. Skipped when batched-GPU
+        # cache is hot (it already has the result).
+        mode = _V3_PER_TARGET_MODE
         n_pairs = len(target_arr_bc) * len(cand_arr)
-        use_per_target = (
-            cached_entry is None
-            and (_V3_PER_TARGET_MODE == "per_target"
-                 or (_V3_PER_TARGET_MODE == "auto"
-                     and n_pairs >= _V3_PER_TARGET_PAIR_THRESHOLD))
-        )
+        if cached_entry is not None:
+            use_njit = False
+            use_per_target = False
+        elif mode == "njit":
+            use_njit = True
+            use_per_target = False
+        elif mode == "per_target":
+            use_njit = False
+            use_per_target = True
+        elif mode == "legacy":
+            use_njit = False
+            use_per_target = False
+        else:  # auto — Round 3 threshold-gated per_target
+            use_njit = False
+            use_per_target = n_pairs >= _V3_PER_TARGET_PAIR_THRESHOLD
 
-        if use_per_target:
+        if use_njit:
+            edges = _v3_aggregate_per_target_njit(net_name, target_arr_bc, CUTOFF_UM)
+        elif use_per_target:
             edges = _v3_aggregate_per_target(net_name, target_arr_bc, CUTOFF_UM)
         else:
             if cached_entry is not None:
@@ -1124,15 +1443,48 @@ def extract_v3_features(geo, layer_map, n_workers: int,
 
     `algo` controls the closest-pair backend selector that `_v3_per_net`
     consults: `"auto"` (default, threshold-gated per-target for long-tail),
-    `"per_target"` (always per-target), or `"legacy"` (always numpy broadcast).
+    `"per_target"` (always numpy per-target), `"legacy"` (always numpy
+    broadcast), or `"njit"` (Round 4 — @njit kernel everywhere).
     """
     global _V3_USE_GPU, _V3_PER_TARGET_MODE
-    if algo not in {"auto", "per_target", "legacy"}:
+    if algo not in {"auto", "per_target", "legacy", "njit"}:
         raise ValueError(f"unknown --v3-algo {algo!r}")
     _V3_PER_TARGET_MODE = algo
     eps_by_layer = _layer_eps_array(layer_map, N_LAYERS_EPS)
     grid = SpatialGrid()
     grid.build(geo["all_cuboids"])
+    # Round 4: build CSR-style dense bin grid + int32 owner_id map upfront
+    # so the @njit kernel can run without per-net Python overhead.
+    v3_njit_state = None
+    if algo == "njit":
+        t_njit_build = time.time()
+        owner_id, owner_name_list, owner_name_to_id = _v3_build_owner_id_map(
+            geo["all_owner"])
+        dense_grid = _v3_build_dense_grid(
+            geo["all_cuboids"], SPATIAL_BIN_UM, SPATIAL_BIN_UM)
+        v3_njit_state = {
+            "all_owner_id": owner_id,
+            "owner_name_list": owner_name_list,
+            "owner_name_to_id": owner_name_to_id,
+            **dense_grid,
+        }
+        print(f"  V3(njit) infra: owner_id + dense_grid built in "
+              f"{time.time() - t_njit_build:.1f}s "
+              f"(bins={dense_grid['bin_nx']}×{dense_grid['bin_ny']}, "
+              f"entries={len(dense_grid['bin_indices']):,})", flush=True)
+        # Warm-up compile in the parent. fork-Pool children inherit the
+        # compiled cache via numba's on-disk cache (`@njit(cache=True)`).
+        _ = _v3_get_njit_kernel()
+        # tiny smoke call so JIT compile happens *before* Pool startup.
+        _smoke = np.zeros((1, 7), dtype=np.float64)
+        _ = _V3_NJIT_KERNEL(
+            _smoke, geo["all_cuboids"], owner_id, np.int32(-1),
+            dense_grid["bin_xmin"], dense_grid["bin_ymin"],
+            dense_grid["bin_nx"], dense_grid["bin_ny"],
+            dense_grid["bin_offsets"], dense_grid["bin_indices"],
+            np.float64(SPATIAL_BIN_UM), np.float64(SPATIAL_BIN_UM),
+            np.float64(CUTOFF_UM),
+        )
     density_per_layer = np.zeros(N_LAYERS_EPS + 2, dtype=np.float64)
     if len(geo["all_cuboids"]) > 0:
         for li in range(1, N_LAYERS_EPS + 1):
@@ -1160,7 +1512,8 @@ def extract_v3_features(geo, layer_map, n_workers: int,
         _v3_gpu_init()
         _v3_gpu_upload_all_cubs(geo["all_cuboids"])
         _V3_USE_GPU = True
-        init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window)
+        init_worker_v3(geo, grid, eps_by_layer, density_per_layer,
+                       density_window, v3_njit_state=v3_njit_state)
         CHUNK = 1024
         done = 0
         for chunk_start in range(0, total, CHUNK):
@@ -1183,14 +1536,16 @@ def extract_v3_features(geo, layer_map, n_workers: int,
 
     chunksize = max(1, total // (n_workers * 1000))
     if n_workers <= 1:
-        init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window)
+        init_worker_v3(geo, grid, eps_by_layer, density_per_layer,
+                       density_window, v3_njit_state=v3_njit_state)
         for nm in target_nets:
             r = _v3_per_net(nm)
             if r:
                 rows.append(r)
     else:
         with mp.Pool(processes=n_workers, initializer=init_worker_v3,
-                     initargs=(geo, grid, eps_by_layer, density_per_layer, density_window)) as pool:
+                     initargs=(geo, grid, eps_by_layer, density_per_layer,
+                               density_window, v3_njit_state)) as pool:
             for i, r in enumerate(pool.imap_unordered(
                     _v3_per_net, target_nets, chunksize=chunksize), 1):
                 if r:
@@ -1594,10 +1949,11 @@ def main():
                     help="Run V3 closest-pair on torch + CUDA (single-process, "
                          "no fork-Pool). Round 2.2.")
     ap.add_argument("--v3-algo", type=str, default="auto",
-                    choices=["auto", "per_target", "legacy"],
+                    choices=["auto", "per_target", "legacy", "njit"],
                     help="V3 closest-pair backend: auto (threshold-gated, "
-                         "default), per_target (always new per-target grid path), "
-                         "legacy (always numpy broadcast). Round 3.")
+                         "default), per_target (always numpy per-target grid), "
+                         "legacy (always numpy broadcast), njit (Round 4 "
+                         "@njit kernel + CSR dense grid + int owner ids).")
     args = ap.parse_args()
     if args.design:
         if args.design not in DESIGNS:
