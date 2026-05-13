@@ -230,21 +230,70 @@ dominates the long-tail nets (113 k V4 jobs × 1-5 tiles each = ~250 k
 gzip+pickle reads) — V4-A (per-net pre-aggregation) would eliminate
 this entirely with no accuracy risk.
 
-### Round 2 — Tensor asset + GPU broadcast (target: nova ≤ 200 s, tv80s ≤ 8 s)
+### Round 2 — Tensor asset + GPU broadcast (FIRST-CUT TRIED 2026-05-13)
 
-5. **G** (per-design `<design>_cuboids.pt` asset built by an extension
-   of `scripts/build_dataset_multi.py`). Replaces V4-A entirely and
-   absorbs V3-E (V3 reads the same asset). One-time disk rebuild per
-   design; net-name → integer id mapping persisted.
-6. **B** (torch + GPU broadcast for V3 and V4). Hybrid CPU+GPU first-cut
-   (small nets stay on CPU multiproc, long-tail routed to a single GPU
-   subprocess started with spawn). Pair-budget batching ~500 M pairs per
-   GPU call. Escalate to single-process multi-GPU shard if hybrid hits
-   PCIe ceiling.
-7. **C-arch decision** during Round 2 PR — choose hybrid (a)+(c) vs pure
-   single-process (b) based on profiling.
+Two paths attempted; both deliver tv80s wins but break on nova scale.
+Recorded below so the next iteration starts from measured ground truth.
 
-Expected end-to-end: nova 30-200 s, tv80s 5-15 s.
+#### 2.1 V4-A indexed per-design cache (`build_v4_pernet_cache.py`)
+
+Schema v4 saves the design's full tile-aggregated cuboid arrays as NPY
+files + a flat CSR per net (tile_set from `_map.csv`). Bit-exact V4
+features.
+
+| Design | Disk | Build wall | V4 wall (old → new) | Pipeline (old → new) |
+|---|---:|---:|---:|---:|
+| tv80s | 5.7 GB | 45 s | 56.3 → 37.7 s (1.49 ×) | 78.9 → **57.9 s** (1.36 ×) |
+| nova  | ~230 GB est | killed mid-sort | – | – |
+
+* tv80s V4 features: **26/26 bit-exact** (R²=1.0, MAE=0) vs baseline.
+* nova fails: `cubs[N_total=5.07 B, 10] fp32` ≈ 200 GB just for the
+  cuboid array, plus argsort scratch (~40 GB) and disk write. Schema v4
+  is structurally fine but I/O bound at nova scale.
+* **Open**: schema v5 idea — store only per-tile bbox metadata (~50 MB)
+  and recompute tile-aggregated subsets at read time from DEF cuboids
+  + SpatialGrid. Needs correctness validation against the tile pkl.gz
+  contents because the original training-time tile rule may differ.
+
+#### 2.2 V3 GPU broadcast (`_v3_compute_closest_gpu`)
+
+torch + CUDA replacement for the (N_t × N_c) numpy broadcast inside
+`_v3_per_net`. Single-process loop (fork-Pool + CUDA are mutually
+exclusive). `--v3-gpu` CLI flag in `pex_cold.py`.
+
+| Design | V3 wall (CPU 16-worker → GPU 1-proc) | Pipeline | Notes |
+|---|---:|---:|---|
+| tv80s | 16.5 → 27.0 s (regress 1.6 ×) | 71.3 s | per-net launch + transfer overhead dominates |
+| nova  | 4,871 → ETA ~11 k s (regress 2.3 ×) | killed | same overhead, but 118 K nets amplify it |
+
+* tv80s feature drift: V3 R² ≥ 0.976 (fp32 GPU + V3-A=512 combined).
+  MAPE_tot 5.086 % (within ±0.2 pp gate). 26/26 V4 features bit-exact.
+* **Root cause**: 100 MB-class `cand_arr` is transferred fresh to GPU
+  per net, plus Python/torch dispatch overhead is ~5-10 ms per call.
+  GPU kernel itself is microseconds. With 118 K small-to-medium nets,
+  per-call overhead dominates.
+* **Open paths for next iteration**:
+  * Pre-load `_V3_ALL_CUBS` to GPU once and gather by `cand_idx` (saves
+    bandwidth per call but not dispatch).
+  * Batch N nets per GPU launch via block-diagonal or per-segment masks.
+  * Hybrid: keep CPU multi-proc as base, route only the top-K nets
+    (where compute > overhead) to a spawn-based GPU sidecar.
+
+#### 2.2 + V4-A combined (tv80s only)
+
+When both are on, tv80s pipeline is **71.3 s** (vs Round 1 78 s) — the
+V4-A win is real, the V3 GPU regression cancels much of it. Not yet a
+clean Pareto improvement.
+
+### Path forward (next session)
+
+1. Reconsider V4-A storage: schema v5 (tile bbox metadata only)
+   for nova-scale viability.
+2. Reconsider V3 GPU: batched dispatch OR hybrid CPU+GPU routing.
+3. End-to-end accuracy + wall comparison table to be produced once a
+   nova-viable Round 2 candidate exists. Feature dumps + diff reports
+   already in `TreePEX/outputs/cold_reports/{feature_dumps,diff_*.md}`
+   so each new candidate can be benchmarked with one command.
 
 ### Round 3 — optional ceiling pushes (only if Round 2 leaves headroom)
 

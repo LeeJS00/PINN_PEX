@@ -249,6 +249,72 @@ def _layer_eps_array(layer_map: dict, n_layers: int = N_LAYERS_EPS) -> List[floa
     return out
 
 
+# Lazy torch handle and persistent CUDA device — only initialized when the
+# user opts into the GPU path. Keeping it module-level + lazy avoids forcing
+# every cold-start invocation to import torch.
+_V3_GPU_DEVICE = None
+_V3_GPU_TORCH = None
+
+
+def _v3_gpu_init(device: str = "cuda:0"):
+    """Idempotent torch + CUDA init for the V3 closest-pair kernel."""
+    global _V3_GPU_DEVICE, _V3_GPU_TORCH
+    if _V3_GPU_TORCH is not None:
+        return _V3_GPU_TORCH
+    import torch as _torch
+    if not _torch.cuda.is_available():
+        raise SystemExit("V3 GPU path requested but torch reports no CUDA device")
+    _V3_GPU_TORCH = _torch
+    _V3_GPU_DEVICE = _torch.device(device)
+    return _V3_GPU_TORCH
+
+
+def _v3_compute_closest_gpu(target_arr_bc: np.ndarray, cand_arr: np.ndarray,
+                            cutoff_um: float):
+    """torch-on-CUDA replacement for the (N_t × N_c) numpy broadcast.
+    Matches `_v3_compute_closest_cpu` modulo fp32 rounding."""
+    _torch = _V3_GPU_TORCH
+    dev = _V3_GPU_DEVICE
+    t_np = target_arr_bc[:, [0, 1, 3, 4]].astype(np.float32, copy=False)
+    c_np = cand_arr[:, [0, 1, 3, 4]].astype(np.float32, copy=False)
+    t_t = _torch.from_numpy(t_np).to(dev, non_blocking=True)
+    c_t = _torch.from_numpy(c_np).to(dev, non_blocking=True)
+    # broadcast (N_t, 1, *) vs (1, N_c, *) on x and y axes
+    dx = _torch.clamp(
+        _torch.abs(t_t[:, 0:1] - c_t[None, :, 0])
+        - (t_t[:, 2:3] + c_t[None, :, 2]) / 2, min=0)
+    dy = _torch.clamp(
+        _torch.abs(t_t[:, 1:2] - c_t[None, :, 1])
+        - (t_t[:, 3:4] + c_t[None, :, 3]) / 2, min=0)
+    d_mat = _torch.sqrt(dx * dx + dy * dy)
+    closest_d_t, closest_t_t = d_mat.min(dim=0)
+    closest_d = closest_d_t.cpu().numpy().astype(np.float64, copy=False)
+    closest_t = closest_t_t.cpu().numpy().astype(np.int64, copy=False)
+    in_range = closest_d <= cutoff_um
+    return closest_t, closest_d, in_range
+
+
+def _v3_compute_closest_cpu(target_arr_bc: np.ndarray, cand_arr: np.ndarray,
+                            cutoff_um: float):
+    tx2 = target_arr_bc[:, 0:1]; ty2 = target_arr_bc[:, 1:2]
+    tw2 = target_arr_bc[:, 3:4]; th2 = target_arr_bc[:, 4:5]
+    ax = cand_arr[:, 0]; ay = cand_arr[:, 1]
+    aw = cand_arr[:, 3]; ah = cand_arr[:, 4]
+    dx = np.maximum(np.abs(tx2 - ax) - (tw2 + aw) / 2, 0)
+    dy = np.maximum(np.abs(ty2 - ay) - (th2 + ah) / 2, 0)
+    d_mat = np.sqrt(dx * dx + dy * dy)
+    closest_t = d_mat.argmin(axis=0).astype(np.int64, copy=False)
+    closest_d = d_mat.min(axis=0)
+    in_range = closest_d <= cutoff_um
+    return closest_t, closest_d, in_range
+
+
+# Per-net broadcast backend selector. Default = CPU; set to True in
+# `extract_v3_features` when the GPU path is enabled. Lives at module scope
+# because `_v3_per_net` is a top-level worker entry point.
+_V3_USE_GPU = False
+
+
 def _v3_per_net(net_name: str) -> Dict[str, float]:
     target_arr = _V3_NETS.get(net_name)
     if target_arr is None or len(target_arr) == 0:
@@ -306,16 +372,12 @@ def _v3_per_net(net_name: str) -> Dict[str, float]:
             target_arr_bc = target_arr[sub_idx]
         else:
             target_arr_bc = target_arr
-        tx2 = target_arr_bc[:, 0:1]; ty2 = target_arr_bc[:, 1:2]
-        tw2 = target_arr_bc[:, 3:4]; th2 = target_arr_bc[:, 4:5]
-        ax = cand_arr[:, 0]; ay = cand_arr[:, 1]
-        aw = cand_arr[:, 3]; ah = cand_arr[:, 4]
-        dx = np.maximum(np.abs(tx2 - ax) - (tw2 + aw) / 2, 0)
-        dy = np.maximum(np.abs(ty2 - ay) - (th2 + ah) / 2, 0)
-        d_mat = np.sqrt(dx * dx + dy * dy)
-        closest_t = d_mat.argmin(axis=0)
-        closest_d = d_mat.min(axis=0)
-        in_range = closest_d <= CUTOFF_UM
+        if _V3_USE_GPU and len(target_arr_bc) * len(cand_arr) >= 4096:
+            closest_t, closest_d, in_range = _v3_compute_closest_gpu(
+                target_arr_bc, cand_arr, CUTOFF_UM)
+        else:
+            closest_t, closest_d, in_range = _v3_compute_closest_cpu(
+                target_arr_bc, cand_arr, CUTOFF_UM)
         if in_range.any():
             sel_cuboids = cand_arr[in_range]
             sel_owners = cand_owners[in_range]
@@ -625,6 +687,77 @@ def _v4_process_net(args: Tuple[str, List[Path]]) -> Dict[str, float]:
 
 
 # ============================================================================
+# V4-A indexed per-design cache (Round 2.1). Eliminates per-net tile-load.
+# Fork-shared globals populated by `init_worker_v4cache`.
+# ============================================================================
+
+_V4C_CUBS = None        # ndarray (N_total, 10) fp32, mmap-able
+_V4C_OWNER = None       # ndarray (N_total,) int32
+_V4C_TILE_OFFSETS = None  # ndarray (n_tiles + 1,) int64
+_V4C_TILE_SET = None    # ndarray (sum_target_tiles,) int32, flat CSR
+_V4C_TILE_SET_OFF = None  # ndarray (n_nets + 1,) int64
+_V4C_NET_NAMES = None   # list[str], int id -> str
+_V4C_NAME_TO_ID = None  # dict[str, int]
+
+
+def init_worker_v4cache(cache: dict):
+    global _V4C_CUBS, _V4C_OWNER, _V4C_TILE_OFFSETS
+    global _V4C_TILE_SET, _V4C_TILE_SET_OFF
+    global _V4C_NET_NAMES, _V4C_NAME_TO_ID
+    _V4C_CUBS = cache["cubs"]
+    _V4C_OWNER = cache["owner"]
+    _V4C_TILE_OFFSETS = cache["tile_offsets"]
+    _V4C_TILE_SET = cache["tile_set"]
+    _V4C_TILE_SET_OFF = cache["tile_set_off"]
+    _V4C_NET_NAMES = cache["net_names"]
+    _V4C_NAME_TO_ID = cache["_name_to_id"]
+
+
+def _v4_process_net_from_cache(net_name: str) -> Dict[str, float]:
+    """Same output as `_v4_process_net` but reads from the indexed per-design
+    cache instead of unpacking tile pkl.gz files. We iterate this net's
+    `_map.csv`-declared target tiles and split cuboids by `owner == nid`
+    per tile (same rule as the tile pkl.gz path).
+    """
+    nid = _V4C_NAME_TO_ID.get(net_name)
+    if nid is None:
+        return {}
+    set_s = _V4C_TILE_SET_OFF[nid]; set_e = _V4C_TILE_SET_OFF[nid + 1]
+    if set_e <= set_s:
+        return {}
+    tile_set = _V4C_TILE_SET[set_s:set_e]
+    target_chunks: List[np.ndarray] = []
+    agg_chunks: List[np.ndarray] = []
+    agg_owner_chunks: List[np.ndarray] = []
+    for tid in tile_set:
+        s = _V4C_TILE_OFFSETS[tid]
+        e = _V4C_TILE_OFFSETS[tid + 1]
+        if e <= s:
+            continue
+        tile_owners = _V4C_OWNER[s:e]
+        t_mask = tile_owners == nid
+        if t_mask.any():
+            target_chunks.append(_V4C_CUBS[s:e][t_mask])
+        a_mask = ~t_mask
+        if a_mask.any():
+            agg_chunks.append(_V4C_CUBS[s:e][a_mask])
+            agg_owner_chunks.append(tile_owners[a_mask])
+    if not target_chunks:
+        return {}
+    target_cubs = np.concatenate(target_chunks, axis=0)
+    agg_groups: Dict[str, np.ndarray] = {}
+    if agg_chunks:
+        agg_cubs_flat = np.concatenate(agg_chunks, axis=0)
+        agg_owners_int = np.concatenate(agg_owner_chunks)
+        for aid in np.unique(agg_owners_int):
+            m = agg_owners_int == aid
+            agg_groups[_V4C_NET_NAMES[int(aid)]] = agg_cubs_flat[m]
+    feats = _v4_net_features(target_cubs, agg_groups)
+    feats["net_name"] = net_name
+    return feats
+
+
+# ============================================================================
 # Per-design driver
 # ============================================================================
 
@@ -671,7 +804,14 @@ def apply_fanout_proxy(df: pd.DataFrame) -> pd.Series:
     return pd.Series(np.maximum(pred, 1.0), index=df.index)
 
 
-def extract_v3_features(geo, layer_map, n_workers: int) -> pd.DataFrame:
+def extract_v3_features(geo, layer_map, n_workers: int,
+                        use_gpu: bool = False) -> pd.DataFrame:
+    """Run V3 feature extraction. When `use_gpu` is True, the per-net
+    closest-pair broadcast (`pex_cold.py:_v3_compute_closest_gpu`) runs on
+    CUDA and the dispatch falls back to single-process — torch CUDA contexts
+    do not survive fork-Pool workers.
+    """
+    global _V3_USE_GPU
     eps_by_layer = _layer_eps_array(layer_map, N_LAYERS_EPS)
     grid = SpatialGrid()
     grid.build(geo["all_cuboids"])
@@ -686,17 +826,35 @@ def extract_v3_features(geo, layer_map, n_workers: int) -> pd.DataFrame:
     else:
         density_window = 1.0
 
-    # V3-C: dispatch largest nets first so straggler tail does not bottleneck
-    # the Pool. Adaptive chunksize: small designs (tv80s, 3.4k nets) need
-    # chunksize=1 so the few-second tail nets distribute across workers
-    # immediately; large designs (nova, 119k nets) need chunksize~7 so the
-    # IPC cost per task is amortized over a non-trivial batch.
+    # V3-C: dispatch largest nets first. Adaptive chunksize: small designs
+    # (tv80s, 3.4k nets) need chunksize=1 so few-second tail nets distribute
+    # across workers immediately; large designs (nova, 119k nets) need
+    # chunksize~7 so the IPC cost per task is amortized over a non-trivial
+    # batch.
     target_nets = sorted(geo["target_set"],
                          key=lambda n: -len(geo["nets"].get(n, ())))
     rows = []
     total = len(target_nets)
-    chunksize = max(1, total // (n_workers * 1000))
     t_progress = time.time()
+
+    if use_gpu:
+        _v3_gpu_init()
+        _V3_USE_GPU = True
+        init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window)
+        for i, nm in enumerate(target_nets, 1):
+            r = _v3_per_net(nm)
+            if r:
+                rows.append(r)
+            if i % 5000 == 0 or i == total:
+                elapsed = time.time() - t_progress
+                rate = i / max(elapsed, 1e-3)
+                eta = (total - i) / max(rate, 1e-3)
+                print(f"  V3(gpu) progress {i}/{total} elapsed={elapsed:.0f}s "
+                      f"rate={rate:.0f}/s eta={eta:.0f}s", flush=True)
+        _V3_USE_GPU = False
+        return pd.DataFrame(rows)
+
+    chunksize = max(1, total // (n_workers * 1000))
     if n_workers <= 1:
         init_worker_v3(geo, grid, eps_by_layer, density_per_layer, density_window)
         for nm in target_nets:
@@ -720,8 +878,81 @@ def extract_v3_features(geo, layer_map, n_workers: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _load_v4_pernet_cache(design: str):
+    """Load the Round 2.1 v3 per-design V4 cache if it exists on disk.
+    Returns a dict of mmap'd / loaded numpy arrays + name map, or None.
+    """
+    prefix = TILE_CACHE_ROOT / f"{design}_v4_pernet"
+    meta_path = prefix.with_suffix(".meta.pkl")
+    if not meta_path.exists():
+        return None
+    with open(meta_path, "rb") as f:
+        meta = pickle.load(f)
+    if meta.get("schema_version") != 4:
+        raise SystemExit(f"unexpected v4 cache schema {meta.get('schema_version')} "
+                         f"at {meta_path}")
+    cache = {
+        "cubs":          np.load(prefix.with_suffix(".cubs.npy"), mmap_mode="r"),
+        "owner":         np.load(prefix.with_suffix(".owner.npy"), mmap_mode="r"),
+        "tile_offsets":  np.load(prefix.with_suffix(".tile_offsets.npy")),
+        "tile_set":      np.load(prefix.with_suffix(".tile_set.npy")),
+        "tile_set_off":  np.load(prefix.with_suffix(".tile_set_off.npy")),
+        "net_names":     meta["net_names"],
+    }
+    cache["_name_to_id"] = {n: i for i, n in enumerate(cache["net_names"])}
+    return cache
+
+
+def extract_v4_h3_from_pernet_cache(design: str, target_nets: set, n_workers: int,
+                                    cache: dict) -> pd.DataFrame:
+    """V4 H3 feature extraction via the pre-built per-net indexed cache."""
+    name_to_id = cache["_name_to_id"]
+    tile_set_off = cache["tile_set_off"]
+
+    def _net_tile_count(nm: str) -> int:
+        nid = name_to_id.get(nm)
+        if nid is None:
+            return 0
+        return int(tile_set_off[nid + 1] - tile_set_off[nid])
+    job_args = sorted(target_nets, key=lambda n: -_net_tile_count(n))
+    rows = []
+    total = len(job_args)
+    chunksize = max(1, total // (n_workers * 1000))
+    t_progress = time.time()
+    if n_workers <= 1:
+        init_worker_v4cache(cache)
+        for nm in job_args:
+            f = _v4_process_net_from_cache(nm)
+            if f:
+                rows.append(f)
+    else:
+        with mp.Pool(processes=n_workers,
+                     initializer=init_worker_v4cache, initargs=(cache,)) as pool:
+            for i, f in enumerate(pool.imap_unordered(
+                    _v4_process_net_from_cache, job_args, chunksize=chunksize), 1):
+                if f:
+                    rows.append(f)
+                if i % 5000 == 0 or i == total:
+                    elapsed = time.time() - t_progress
+                    rate = i / max(elapsed, 1e-3)
+                    eta = (total - i) / max(rate, 1e-3)
+                    print(f"  V4(cached) progress {i}/{total} elapsed={elapsed:.0f}s "
+                          f"rate={rate:.0f}/s eta={eta:.0f}s "
+                          f"chunk={chunksize}", flush=True)
+    return pd.DataFrame(rows)
+
+
 def extract_v4_h3_from_tile_cache(design: str, target_nets: set, n_workers: int) -> pd.DataFrame:
-    """Build (net → list of tile paths) from <design>_map.csv and run V4 H3."""
+    """Build (net → list of tile paths) from <design>_map.csv and run V4 H3.
+
+    If a Round 2.1 indexed cache (`<design>_v4_pernet.pkl`) exists, use it
+    instead — same features, ~10-30× wall reduction by eliminating per-net
+    tile pkl.gz reads.
+    """
+    cache = _load_v4_pernet_cache(design)
+    if cache is not None:
+        return extract_v4_h3_from_pernet_cache(design, target_nets, n_workers, cache)
+
     tile_dir = TILE_CACHE_ROOT / design
     map_csv = TILE_CACHE_ROOT / f"{design}_map.csv"
     if not tile_dir.exists() or not map_csv.exists():
@@ -893,7 +1124,8 @@ def mape_mean(p, g):
 # Per-design pipeline
 # ============================================================================
 
-def run_design(design: str, def_path: Path, n_workers: int) -> dict:
+def run_design(design: str, def_path: Path, n_workers: int,
+               v3_gpu: bool = False) -> dict:
     print(f"\n========== COLD-START ▶ {design} ==========", flush=True)
     timings = {"design": design, "n_workers_per_design": n_workers}
     t_design_start = time.time()
@@ -920,7 +1152,7 @@ def run_design(design: str, def_path: Path, n_workers: int) -> dict:
 
     # 3) V3 feature extraction (DEF-only, parallel)
     t0 = time.time()
-    df_v3 = extract_v3_features(geo, layer_map, n_workers)
+    df_v3 = extract_v3_features(geo, layer_map, n_workers, use_gpu=v3_gpu)
     timings["t_v3_features_s"] = round(time.time() - t0, 3)
     timings["n_v3_rows"] = len(df_v3)
     print(f"[{design}] V3 features: {timings['t_v3_features_s']}s  rows={timings['n_v3_rows']:,}",
@@ -1030,6 +1262,9 @@ def main():
     ap.add_argument("--design", type=str, default=None)
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--serial", action="store_true")
+    ap.add_argument("--v3-gpu", action="store_true",
+                    help="Run V3 closest-pair on torch + CUDA (single-process, "
+                         "no fork-Pool). Round 2.2.")
     args = ap.parse_args()
     if args.design:
         if args.design not in DESIGNS:
@@ -1042,8 +1277,11 @@ def main():
     summaries: List[dict] = []
     if args.serial or len(targets) == 1:
         for d, p in targets:
-            summaries.append(run_design(d, p, args.workers))
+            summaries.append(run_design(d, p, args.workers, v3_gpu=args.v3_gpu))
     else:
+        if args.v3_gpu:
+            raise SystemExit("--v3-gpu requires --serial or a single --design "
+                             "(CUDA state is per-process)")
         with ProcessPoolExecutor(max_workers=len(targets)) as ex:
             futs = {ex.submit(run_design, d, p, args.workers): d for d, p in targets}
             for fut in as_completed(futs):
