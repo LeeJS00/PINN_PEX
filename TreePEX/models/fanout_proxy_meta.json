@@ -1,0 +1,14 @@
+{
+  "feats": [
+    "n_aggressor_nets",
+    "n_cuboids",
+    "n_edges_lt_1um",
+    "n_edges_1_to_3um",
+    "broadside_overlap_total_um2",
+    "lateral_overlap_total_um2",
+    "total_metal_area_um2",
+    "bbox_xy_um2"
+  ],
+  "kind": "xgb_tweedie",
+  "model_file": "fanout_proxy_xgb_tweedie.json"
+}

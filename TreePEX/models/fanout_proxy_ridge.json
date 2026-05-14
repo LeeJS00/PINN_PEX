@@ -1,0 +1,24 @@
+{
+  "feats": [
+    "n_aggressor_nets",
+    "n_cuboids",
+    "n_edges_lt_1um",
+    "n_edges_1_to_3um",
+    "broadside_overlap_total_um2",
+    "lateral_overlap_total_um2",
+    "total_metal_area_um2",
+    "bbox_xy_um2"
+  ],
+  "coef": [
+    0.27780931418681515,
+    0.036091141244018535,
+    0.8361075401522279,
+    0.5334931094923299,
+    0.5298446455577696,
+    0.08138538435358493,
+    0.2746549830818221,
+    0.21722930473476684
+  ],
+  "intercept": -6.843767260871656,
+  "log_space": true
+}

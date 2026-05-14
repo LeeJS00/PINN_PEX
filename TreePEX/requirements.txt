@@ -1,0 +1,17 @@
+# TreePEX deployment dependencies — Python 3.11+
+# Tested with Python 3.11.9 on RHEL 8.10 (4.18.0 kernel).
+
+# Core numerics
+numpy>=1.26,<3.0
+pandas>=2.0,<3.0
+
+# Tree model
+xgboost>=2.0,<4.0
+
+# Optional: Round 4 Numba JIT V3 kernel (recommended; ~2x V3 speedup)
+# pip install --user numba  (BSD-2)
+numba>=0.59,<1.0
+llvmlite>=0.42,<1.0
+
+# Optional: parquet IO for cold-start cache
+pyarrow>=14.0,<22.0

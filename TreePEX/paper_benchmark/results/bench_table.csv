@@ -1,0 +1,3 @@
+design,model,stage1_parse_s,stage2_tile_build_s,stage3_feature_extract_s,stage4_model_load_s,stage5_predict_s,stage6_spef_write_s,stage7_compare_s,total_e2e_s,wall_after_shared_s,n_nets,tot_mape_med,gnd_mape_med,cpl_mape_med,R2_tot,spef_bytes
+intel22_tv80s_f3,XGBoost-pex_v6,1.683,0.0,2.129,2.899,0.384,0.009,0.001,7.105,5.946,3169,4.978500566498772,18.021651193383573,13.267572410408885,0.9940446686115864,183483
+intel22_nova_f3,XGBoost-pex_v6,65.26599999999999,0.0,2.081,2.421,0.602,0.174,0.005,70.549,5.38,92425,5.278907657192619,17.402424817757463,14.955029545958137,0.9911241032430856,5809364
