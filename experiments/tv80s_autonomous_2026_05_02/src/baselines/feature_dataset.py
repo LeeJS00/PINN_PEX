@@ -38,7 +38,7 @@ from typing import Iterator, Optional
 import numpy as np
 import pandas as pd
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]  # PINNPEX root (..baselines/..src/..tv80s_auto/..experiments/..PINNPEX)
 sys.path.insert(0, str(_PROJECT_ROOT / "pex_v3"))
 
 
@@ -94,6 +94,30 @@ def _extract_net_name(node: str) -> str:
     return _normalize_name(node.split(":")[0])
 
 
+_p_nm_line = re.compile(r"^\*(\d+)\s+(\S+)\s*$")
+
+
+def _read_name_map(spef_path: Path) -> dict:
+    """Read NAME_MAP section: `*id name` → `{'*id': name}`. Empty for intel22 (no NAME_MAP)."""
+    nm = {}
+    in_nm = False
+    with open(spef_path, "r") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("//"):
+                continue
+            if s.startswith("*NAME_MAP"):
+                in_nm = True
+                continue
+            if in_nm and s.startswith("*") and not _p_nm_line.match(s):
+                in_nm = False
+            if in_nm:
+                m = _p_nm_line.match(s)
+                if m:
+                    nm["*" + m.group(1)] = m.group(2)
+    return nm
+
+
 def stream_spef_nets(spef_path: Path) -> Iterator[dict]:
     """Yield one record per *D_NET in the SPEF.
 
@@ -101,20 +125,24 @@ def stream_spef_nets(spef_path: Path) -> Iterator[dict]:
         net_name, total_cap_fF, ground_cap_fF, c_cpl_total_fF, total_res_ohm,
         coupled_caps (dict aggressor -> fF)
 
-    SPEF dialect handled: StarRC standard format. Notation:
-        *D_NET <name> <total_cap>
-        *CAP
-            N node val           # ground cap
-            N node1 node2 val    # coupling cap
-        *RES
-            N node1 node2 res
-        *END
+    Handles both intel22-style (direct names) and ASAP7-style (NAME_MAP) SPEFs.
     """
     p_dnet = re.compile(r"\*D_NET\s+(\S+)\s+([0-9\.\+eE\-]+)")
     p_res_with_anno = re.compile(
         r"^\d+\s+\S+\s+\S+\s+([0-9\.\+eE\-]+)\s*\/.*$"
     )
     p_res_simple = re.compile(r"^\d+\s+\S+\s+\S+\s+([0-9\.\+eE\-]+)\s*$")
+
+    name_map = _read_name_map(spef_path)
+
+    def _resolve(tok: str) -> str:
+        tok = _normalize_name(tok)
+        if not tok.startswith("*"):
+            return tok
+        if ":" in tok:
+            head, tail = tok.split(":", 1)
+            return name_map.get(head, head) + ":" + tail
+        return name_map.get(tok, tok)
 
     with open(spef_path, "r") as f:
         in_cap = False
@@ -132,7 +160,7 @@ def stream_spef_nets(spef_path: Path) -> Iterator[dict]:
                 if cur is not None:
                     yield cur
                 cur = {
-                    "net_name": _normalize_name(m.group(1)),
+                    "net_name": _resolve(m.group(1)),
                     "total_cap_fF": float(m.group(2)),
                     "ground_cap_fF": 0.0,
                     "c_cpl_total_fF": 0.0,
@@ -172,8 +200,8 @@ def stream_spef_nets(spef_path: Path) -> Iterator[dict]:
                         pass
                 # Coupling cap: 4+ tokens = "id node1 node2 val"
                 elif len(tokens) >= 4:
-                    n1 = _extract_net_name(tokens[1])
-                    n2 = _extract_net_name(tokens[2])
+                    n1 = _extract_net_name(_resolve(tokens[1]))
+                    n2 = _extract_net_name(_resolve(tokens[2]))
                     try:
                         val = float(tokens[3])
                     except ValueError:
@@ -235,8 +263,16 @@ def _bbox_from_cuboids(arr: np.ndarray) -> tuple[float, float, float, float]:
     return xmin, xmax, ymin, ymax
 
 
-def _scan_design_geometry(def_path: Path, layer_map) -> dict:
+def _scan_design_geometry(
+    def_path: Path,
+    layer_map,
+    tech_lef_path: Path | None = None,
+    cell_lef_path: Path | None = None,
+) -> dict:
     """Parse one DEF; return per-net cuboid arrays + global VSS array.
+
+    PDK paths default to intel22 (backward compat) but can be overridden
+    by the caller for cross-PDK use (e.g. ASAP7).
 
     Returns:
         {
@@ -248,14 +284,31 @@ def _scan_design_geometry(def_path: Path, layer_map) -> dict:
             'design_name': stem,
         }
     """
-    tech_lef_path = _PROJECT_ROOT / "tool" / "pdk" / "22nm" / "tech_lef" / "p1222_js.lef"
-    cell_lef_path = _PROJECT_ROOT / "tool" / "pdk" / "22nm" / "cell_lef" / "b15_nn.lef"
+    if tech_lef_path is None:
+        tech_lef_path = _PROJECT_ROOT / "tool" / "pdk" / "22nm" / "tech_lef" / "p1222_js.lef"
+    if cell_lef_path is None:
+        cell_lef_path = _PROJECT_ROOT / "tool" / "pdk" / "22nm" / "cell_lef" / "b15_nn.lef"
     tech_lef = LefParser(tech_lef_path).parse()
     cell_lib = CellLibParser(cell_lef_path).parse()
 
     parser = DefStreamParser(str(def_path), layer_map, tech_lef, cell_lib)
     nets: dict[str, list] = {}
     vss_rows: list = []
+
+    # FIX (Phase C audit A3, re-applied 2026-05-14 after regression):
+    # segments carry `"layer"` STRING (e.g. "m3" intel22 / "M3" ASAP7), not
+    # `"layer_idx"`. Old code `.get("layer_idx", 0)` silently routed ALL
+    # cuboids to layer 0, dead-weighting 15 of 43 features. The archive
+    # `pex_v3/src/baselines/feature_dataset.py` had this fix; it was lost
+    # in the tv80s_autonomous_2026_05_02 refactor. Both `m1` and `M1`
+    # variants must match (case-insensitive PDK names).
+    _LAYER_RE = re.compile(r"[mM](\d+)")
+
+    def _layer_str_to_idx(name) -> int:
+        if name is None:
+            return 0
+        m = _LAYER_RE.match(str(name))
+        return int(m.group(1)) if m else 0
 
     for net_name, cuboids, segments in parser.parse():
         if cuboids is None or cuboids.size == 0:
@@ -268,7 +321,7 @@ def _scan_design_geometry(def_path: Path, layer_map) -> dict:
             # (Manhattan routing on single-layer wires; via cuboids would need
             # different handling but rare in this dataset).
             if segments and len(segments) > 0:
-                layer = int(segments[0].get("layer_idx", 0))
+                layer = _layer_str_to_idx(segments[0].get("layer"))
             else:
                 layer = 0
             layer_col = np.full((len(cuboids), 1), layer, dtype=np.float64)
@@ -442,17 +495,23 @@ def build_feature_dataset_for_design(
     manifest_subset: pd.DataFrame,
     cutoff_um: float = 4.0,
     max_aggr_per_net: int = 256,
+    layers_info_path: Path | None = None,
+    tech_lef_path: Path | None = None,
+    cell_lef_path: Path | None = None,
 ) -> pd.DataFrame:
     """Build the feature DataFrame for a single design.
 
     `manifest_subset` is the v3 manifest filtered to this design (column 'split'
-    propagates from manifest).
+    propagates from manifest). PDK paths default to intel22 for backward compat;
+    override for cross-PDK use (e.g. ASAP7).
     """
-    layer_map = LayerInfoParser(_PROJECT_ROOT / "tool" / "pdk" / "22nm" / "layers" / "layers.info").parse()
+    if layers_info_path is None:
+        layers_info_path = _PROJECT_ROOT / "tool" / "pdk" / "22nm" / "layers" / "layers.info"
+    layer_map = LayerInfoParser(layers_info_path).parse()
     layer_eps = _layer_eps_array(layer_map, n_layers=10)
 
     print(f"  parsing DEF: {def_path.name}")
-    geo = _scan_design_geometry(def_path, layer_map)
+    geo = _scan_design_geometry(def_path, layer_map, tech_lef_path=tech_lef_path, cell_lef_path=cell_lef_path)
     print(f"    {len(geo['nets']):,} nets, {len(geo['vss']):,} VSS cuboids")
 
     print(f"  parsing SPEF: {spef_path.name}")
@@ -548,6 +607,10 @@ def write_feature_dataset_for_design(
     manifest_subset: pd.DataFrame,
     out_path: Path,
     cutoff_um: float = 4.0,
+    max_aggr_per_net: int = 256,
+    layers_info_path: Path | None = None,
+    tech_lef_path: Path | None = None,
+    cell_lef_path: Path | None = None,
 ) -> int:
     """Build features and write to parquet. Returns row count."""
     df = build_feature_dataset_for_design(
@@ -555,6 +618,10 @@ def write_feature_dataset_for_design(
         spef_path=spef_path,
         manifest_subset=manifest_subset,
         cutoff_um=cutoff_um,
+        max_aggr_per_net=max_aggr_per_net,
+        layers_info_path=layers_info_path,
+        tech_lef_path=tech_lef_path,
+        cell_lef_path=cell_lef_path,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.suffix == ".parquet":
