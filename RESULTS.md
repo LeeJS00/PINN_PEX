@@ -1,6 +1,149 @@
 # PINN-PEX RESULTS — canonical leaderboard
 
-_Last updated: 2026-05-05_
+_Last updated: 2026-05-18 (refinement sprint v3 lock — L5 drop both PDKs; ASAP7 specialist d9 n750 → d8 n500)._
+
+## 0. **DEPLOYABLE FRONTIER — TreePEX 5-seed Tweedie ensemble** (post-sprint 2026-05-18)
+
+End-to-end deployable PEX tool: `TreePEX/`. Features → 5-seed Tweedie XGBoost
+ensemble (depth=8, n_est=500, vp=1.5) → L11 large-net specialist (ASAP7 only,
+d8 n500) → IEEE 1481-1999 SPEF → golden comparison. CPU-only (no GPU needed).
+L5 calibration **dropped** (both PDKs, net 0 ASAP7 / −0.10/−0.14 pp IMPROVE intel22).
+
+### Paper benchmark — END-TO-END wall (parse → predict → SPEF), MAPE_med
+
+| PDK | Design | n_nets | tot_MAPE | gnd_MAPE | cpl_MAPE | R²(tot) | **Wall e2e** | predict-only |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| **intel22** | tv80s_f3 | 3,169 | **4.95 %** | 17.96 % | 13.51 % | **0.9936** | **11.27 s** | 0.38 s |
+| **intel22** | nova_f3 | 92,425 | **5.34 %** | 17.42 % | 15.21 % | **0.9914** | **82.10 s** | 0.60 s |
+| **ASAP7** | tv80s_x1 | 3,328 | **6.72 %** | 20.10 % | 9.01 % | **0.9854** | **9.68 s warm** | 7.75 s |
+| **ASAP7** | nova_x1 | 125,499 | **7.93 %** | 21.32 % | 10.78 % | **0.9699** | cold 3249 s | (warm n/a) |
+
+Stage breakdown (tv80s / nova):
+- Parse (DEF + tech LEF + cell LEF + layer.info): 1.68 / 65.27 s
+- Feature extract (V3 41-D + V4 H3 26-D): 2.13 / 2.08 s
+- Model load (10 × XGBoost JSON): 2.90 / 2.42 s
+- Predict (5-seed CPU): 0.38 / 0.60 s
+- SPEF write: 0.009 / 0.17 s
+- Compare to golden: 0.001 / 0.005 s
+
+Parse dominates wall for large designs; ML inference itself < 1 s. Full table:
+`TreePEX/paper_benchmark/PAPER_TABLE.md`.
+
+### vs PINN v12 mesh (5-seed ensemble, archived under `archive/pex_v3/`)
+
+| Design | XGBoost TreePEX tot | PINN v12 mesh tot | Δ | Predict-only ratio |
+|---|---:|---:|---:|---:|
+| tv80s | 4.98 % | 8.23 % | **−3.25 pp** | **9.1× faster** (0.38 vs 3.46 s) |
+| nova  | 5.28 % | 7.88 % | **−2.60 pp** | **33.8× faster** (0.60 vs 20.29 s) |
+
+### Predict-only (legacy 2026-05-10 numbers for cross-reference)
+
+| design | n_nets | tot_med | gnd | cpl | R²(tot) | inference | SPEF write |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| tv80s | 3,169 | 4.979 % | 18.02 % | 13.27 % | 0.9940 | 0.171 s | 0.16 s |
+| nova  | 92,425 | 5.279 % | 17.40 % | 14.96 % | 0.9911 | 0.185 s | 3.01 s |
+
+vs prior:
+- **v12 PINN (5-seed)**: tv80s 5.55 / 20.4 s standalone → **TreePEX −0.57 pp / 120× faster**
+- **B1 XGBoost (5-seed)**: tv80s 5.30 / 5.83 → TreePEX −0.32 pp / −0.55 pp
+- **Innovus / OpenRCX (pattern matching)**: 22-72 % per cap-decile → TreePEX 4-9× better
+
+SPEF round-trip lossless (max abs err 5e-6 fF). Per-bucket C8 (mid-cap nets,
+1.46 fF mean) hits **4.02 %** locally — confirms 4 % achievable on mid/large
+nets and that aggregate ≥ 4.98 % is bottlenecked by C1 (smallest 10 %, cap < 0.15 fF)
+denominator noise.
+
+**Why ensemble inference improves over single-seed mean**: TreePEX averages 5
+predictions per net BEFORE computing MAPE; original 5-seed lock averaged
+MAPE across seeds. Predict-then-aggregate cancels per-seed variance directly,
+yielding 5.087 → 4.979 (tv80s) and 5.417 → 5.279 (nova) without any
+architectural change.
+
+Pipeline: `TreePEX/REPORT.md`. Tool: `TreePEX/scripts/pex_tool.py --all`.
+Models: `TreePEX/models/` (10 × ~12 MB Tweedie XGBoost weights, ~120 MB total).
+
+## 0.5. **pex_v5 auto-4pct round 1+2 — exhaustive ceiling exploration** (2026-05-10)
+
+Goal tv80s tot_med ≤ 4.0 % NOT achieved as 5-seed mean across separate models.
+Closest deployable per-seed-model 5.087 ± 0.049 (S4 Tweedie); TreePEX's
+ensemble-of-predictions reaches **4.979 %** (see §0). Theoretical oracle
+bound on per-bucket approach: P2 4.742 / P7 r1 mean 4.679 — but this is
+the ceiling of "67-D scalar feature + tree model", not an information
+ceiling. **StarRC reaches golden cap on the same DEF/LEF/Liberty/layer-stack
+inputs**, so the gap to 4 % is a representation/architecture problem, not
+a missing-input problem.
+
+| strategy | tv80s tot | nova tot | inference (95k) | deployable? |
+|---|---:|---:|---:|---|
+| S4 Tweedie (ref) | 5.087 ± 0.049 | 5.417 ± 0.027 | 0.05 s | ✓ |
+| P1 quantile (Small/Big) | 5.380 / 5.380 | 6.13 / 6.70 | 0.05–0.4 s | ✓ but worse |
+| **P2 per-bucket + oracle** | **4.742 ± 0.070** | **5.004 ± 0.041** | ~0.5 s | ✗ (oracle) |
+| **P7 mega-mean (incl P2 oracle)** | **4.679** | **4.970** | ~1.0 s | ✗ (oracle) |
+| P8 deployable router | 5.692 ± 0.085 | 6.003 ± 0.049 | ~0.1 s | ✓ but +0.6pp |
+
+Key findings:
+- **Per-bucket specialization** reaches 4.74 % oracle but deployable router
+  (86.5 % exact, 13.5 % misroute) erases the gain (P8 +0.6 pp regression vs S4).
+- Quantile / custom MAPE objectives don't help (P1 5.38, P3 12.1 broken).
+- 4 % requires richer **representation** (not new inputs — StarRC uses same DEF/LEF/Liberty/layer-stack and reaches golden). Current 67-D scalar feature + tree model leaves on the table the per-pair / per-segment field information that StarRC's NXTGRD lookup + field solver capture.
+
+Full writeup: `pex_v5/reports/FINAL.md`. Strategy artifacts: `pex_v5/runs/`.
+
+## 0.5. **S4 Tweedie 5-seed** — auto-4pct round 2 verdict (2026-05-09)
+
+Goal of tv80s tot_med ≤ 4.0% NOT achievable on current input modality —
+8 strategies (S1-S9) tried, best single-seed 5.032 (vp=1.4), best 5-seed
+locked **5.087 ± 0.049** (S4 Small_combined + Tweedie loss vp=1.5).
+
+**S4 = new paper frontier**. Beats v12 PINN tv80s tot −0.46 pp at 400× faster
+wall, AND beats prior Small_combined / Big_combined on nova-side
+(tot 5.42 / gnd 17.48 / cpl 15.00 — best on every nova axis). std 0.027
+on nova (lowest). No regression vs v12 anywhere.
+
+Diagnosis: **information ceiling on DEF/LEF/Liberty inputs**. C1 (smallest
+nets, cap<0.15fF) drives residual; closing 1.1 pp gap to 4 % requires new
+input modality (GDSII substrate / extracted res-grid) or different target
+(block-level / cap-weighted MAPE).
+
+Full writeup: `pex_v4/auto_4pct/reports/FINAL.md`.
+
+S4 deployable artifact: `pex_v4/auto_4pct/runs/S4_tweedie/S4_tweedie_seed{42,0,1,2,3}_test.csv`
+
+## 0.5. Newest frontier — H-track 5-seed lock (2026-05-09)
+
+5 seeds × 3 configs (B1 / Small_combined / Big_combined). Paired Wilcoxon p=0.0625
+across-seed comparison = max significance achievable with n=5. All differences below
+have effect size d > 1.0 except where noted "NS".
+
+### Per-design 5-seed mean ± std (intel22 cross-design test)
+
+| config | feats | wall (95k nets) | tv80s tot_med | tv80s gnd | tv80s cpl | nova tot_med | nova gnd | nova cpl |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| B1 (5-seed) | 41 | 0.05 s | 5.30 ± 0.05 | 19.89 ± 0.16 | 14.16 ± 0.09 | 5.83 ± 0.08 | 19.93 ± 0.11 | 16.31 ± 0.12 |
+| **Small_combined** | **67** | **0.05 s** | **5.28 ± 0.07** | **18.90 ± 0.24** | **13.57 ± 0.07** | **5.62 ± 0.02** | **18.59 ± 0.23** | **15.32 ± 0.06** |
+| Big_combined | 67 | 0.4 s | 5.17 ± 0.07 | 17.84 ± 0.08 | 13.23 ± 0.13 | 5.92 ± 0.06 ⚠ | 17.54 ± 0.11 | 15.60 ± 0.05 |
+| v12 PINN frontier | 41 + cuboid-enc | **20.4 s** | 5.55 (5-seed) | 22.59 | 17.53 | n/a | n/a | n/a |
+
+⚠ Big_combined nova tot_med +0.09 pp regression vs B1 (d=-1.20, paired Wilcoxon
+p=0.0625) — capacity overfits without compensating per-channel gain.
+
+### Paper-grade winner: **Small_combined**
+
+Beats B1 on every design × every per-channel axis with d > 4, no regression
+anywhere. Beats v12 frontier on every axis: tv80s tot −0.27 pp, gnd −3.69 pp,
+cpl −3.96 pp at **400× faster wall-clock** (0.05 s vs 20.4 s on 95 594 nets).
+pex_v4 CLAUDE.md strict targets (gnd ≤ 18.0, cpl ≤ 14.0) — cpl hit cleanly on
+both designs; gnd at 18.59-18.90 (just above 18.0 target).
+
+Big_combined captures additional per-channel lift (gnd −2 pp, cpl −0.5 pp on
+top of Small_combined) but pays nova tot stability cost — high-capacity variant
+suitable for tv80s-equivalent designs but not yet cross-design Pareto-optimal.
+
+Reproducibility: `pex_v4/scripts/{29_extract_new_features.py, 30_xgb_with_new_features.py,
+31_five_seed_lock.py}`. Outputs: `pex_v4/results/{xgb_big_combined, xgb_new_features,
+five_seed_lock}/`. Full writeup: `pex_v4/docs/H_FEATURES_RESULT.md`.
+
+---
 _Scope: every measured run on cross-design OOD (nova + tv80s, 95,594 nets) or its single-design subset. 5-seed numbers locked under P6 protocol; single-seed marked explicitly._
 _Source aggregations consolidated here: `pex_v3/paper/RESULTS_CONSOLIDATED.md`, `pex_v3/joint_pareto/results/leaderboard.json`, `pex_v3/experiments/auto_optimize_2026_05_03/HERO.md`, `experiments/cross_design_tv80s_2026_05_02/r_analytic_v3/reports/{V3,CGND}_RESULTS.md`, `docs/PROJECT_REPORT.md` §2._
 

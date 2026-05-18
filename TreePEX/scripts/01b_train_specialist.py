@@ -38,10 +38,20 @@ _ap = argparse.ArgumentParser()
 _ap.add_argument("--pdk", default="asap7", choices=["intel22", "asap7"])
 _ap.add_argument("--threshold_fF", type=float, default=3.0,
                  help="Train on rows with gold_total > this (fF)")
+_ap.add_argument("--out_dir", default=None,
+                 help="Override output dir (default = PDK models_dir)")
+_ap.add_argument("--depth", type=int, default=9,
+                 help="XGB max_depth (default 9; canonical specialist)")
+_ap.add_argument("--n_est", type=int, default=750,
+                 help="XGB n_estimators (default 750; canonical specialist)")
+_ap.add_argument("--no_h3", action="store_true",
+                 help="Drop 26-D V4 H3 features; train V3-only 41-D specialist.")
 _args = _ap.parse_args()
 _PDK = get_pdk(_args.pdk)
 
-MODELS = _PDK.models_dir
+MODELS = Path(_args.out_dir) if _args.out_dir else _PDK.models_dir
+MODELS.mkdir(parents=True, exist_ok=True)
+print(f">>> output dir: {MODELS}", flush=True)
 V3_FEATURES = _PDK.v3_features
 V4_NEW_FEATS = _PDK.v4_new_feats
 
@@ -77,9 +87,11 @@ H3_FEATURE_COLS = [
     "agg_count_within_1um_xyz", "agg_count_within_3um_xyz",
     "agg_count_within_5um_xyz",
 ]
-FEAT_ORDER = BASE_FEATURE_COLS + H3_FEATURE_COLS
+FEAT_ORDER = (BASE_FEATURE_COLS if _args.no_h3
+              else BASE_FEATURE_COLS + H3_FEATURE_COLS)
 
-CONFIG = {"depth": 9, "n_est": 750, "lr": 0.05, "vp": 1.5, "early_stop": 100}
+CONFIG = {"depth": _args.depth, "n_est": _args.n_est,
+          "lr": 0.05, "vp": 1.5, "early_stop": 100}
 SEEDS = [42, 0, 1, 2, 3]
 L6_FANOUT_NOISE_STD = float(os.environ.get("TREEPEX_L6_FANOUT_NOISE", "0.2"))
 SWITCH_FEATURE = "total_wire_length_um"

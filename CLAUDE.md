@@ -1,125 +1,158 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repository.
 
-## Project purpose
+## Project purpose (2026-05-11, post-pivot; refinement sprint v3 lock 2026-05-18)
 
-PINN-PEX is a physics-informed neural field that predicts parasitic capacitance from routed layouts (DEF + tech LEF + layer stack) and emits SPEF. The golden oracle is StarRC; the network learns to mimic it cheaply. The pipeline is four stages: **build dataset → SSL pretrain (`DeepPEX_Model`) → active-learning finetune against StarRC → evaluate / write SPEF**.
+**PINN-PEX is a parasitic capacitance predictor for routed VLSI layouts.** Given
+DEF + tech LEF + cell LEF + Liberty + layer.info as input, it produces a SPEF
+file with predicted ground + coupling capacitances. The golden oracle is StarRC.
+
+The **canonical model is `TreePEX/`: a 5-seed Tweedie XGBoost ensemble**, which
+matches or beats every PINN paradigm tried in the historical tree on accuracy
+AND wall-clock. Other tracks (PINN mesh v3 / substrate physics v4 / auto-4 % v5
+/ per-pair v7 / hybrid analytic v8) are archived under `archive/` (gitignored).
+
+### Numbers (post refinement sprint v3, 5-seed ensemble, MAPE_med)
+
+| PDK | Design | n_nets | MAPE_tot | R²_tot | Wall (warm e2e) |
+|---|---|---:|---:|---:|---:|
+| intel22 22 nm | tv80s_f3 | 3,169 | **4.95 %** | **0.9936** | 11.27 s |
+| intel22 22 nm | nova_f3 | 92,425 | **5.34 %** | **0.9914** | 82.10 s |
+| ASAP7 7 nm | tv80s_x1 | 3,328 | **6.72 %** | **0.9854** | 9.68 s |
+| ASAP7 7 nm | nova_x1 | 125,499 | **7.93 %** | **0.9699** | (cold) 3249 s |
+
+PINN v12 mesh reference (intel22 tv80s/nova): 8.23 % / 7.88 % MAPE at 10.46/91.12 s wall.
+
+See `TreePEX/paper_benchmark/PAPER_TABLES_v2.md` (rev 2) for full breakdown.
 
 ## Environment
 
-Shell is `tcsh`, Python is loaded through environment modules. Before running anything, in an interactive shell:
+Shell is `tcsh`, Python is loaded through environment modules:
 
 ```tcsh
 source tool.env   # module load python/3.11.9, starrc/2021.06, license/license
 ```
 
-`tool.env` contains `module load ...` commands; it is not a shell-agnostic env file.
+## Canonical pipeline (TreePEX)
 
-The active config is `configs/config.py` (imported as `configs.config`). Other configs (`config_intel22.py`, `config_asap7.py`, ...) are alternates — you swap them by editing the imports, there is no `--config` flag. Paths in `config.py` are host-specific (e.g. `PROCESSED_DIR=/data/PEX_SSL/data/processed/intel22`, `SPEF_DIR=/home/jslee/projects/PEX_SSL/golden_data/spef_data/intel22`) — verify they exist before blaming code.
+### Run inference end-to-end
 
-## Commands
-
-All commands run from the repo root.
-
-**Build dataset** (all DEFs in `cfg.TRAIN_DEFS + cfg.TEST_DEFS`, skips designs already in the manifest):
 ```bash
+# Both test designs, full pipeline (parse → features → predict → SPEF):
+python3 TreePEX/scripts/pex_tool.py --all
+
+# One design:
+python3 TreePEX/scripts/pex_tool.py --design intel22_tv80s_f3
+```
+
+### Run paper benchmark (parse + predict + SPEF + compare, with stage timings)
+
+```bash
+python3 TreePEX/paper_benchmark/scripts/bench_e2e.py --skip-pinn   # XGBoost only
+python3 TreePEX/paper_benchmark/scripts/bench_pinn.py              # PINN reference (from archive)
+```
+
+Outputs land in `TreePEX/paper_benchmark/{results,outputs}/`.
+
+### Train from scratch
+
+```bash
+# Build cuboid-tile cache (one-time, offline):
 python3 scripts/build_dataset_multi.py
-```
-Single design (what `_multi` shells out to):
-```bash
-python3 scripts/build_dataset.py --def_path <DEF> --out_dir <dir> --pt_out_dir <dir> --num_workers 16
-```
 
-**SSL pretrain** (writes `output_intel22/checkpoints/<cfg.RUN_NAME>/bem_ssl_ep*.pth`):
-```bash
-python3 src/trainers/train_ssl.py
+# Train 5-seed XGBoost ensemble (≈10 min on CPU):
+python3 TreePEX/scripts/01_train_save_models.py
 ```
 
-**Active-learning finetune** (loads the latest `bem_ssl_ep*.pth` as basis, freezes encoder + norm, trains only `charge_basis_mlp / gnd_mlp / cpl_mlp`):
-```bash
-python3 run_active_learning.py --model_name <run_tag> --gpu <id> [--model_type DeepPEX|GNNCap]
-```
-Outputs land under `output_intel22/active_learning/<model_name>/` (`model_iter_*.pth`, `best_model.pth`, `al_training_log_*.csv`, `al_session_budget.csv`, `al_macro_runtime.csv`). Note: `--model_type GNNCap` imports `src.models.baselines`, which does not exist in this tree — only the `DeepPEX` path is runnable without adding that module.
+## Architecture (TreePEX frontier)
 
-**Evaluate** (reads `best_model.pth` from the AL output dir):
-```bash
-python3 src/evaluation/evaluator.py --model_name <run_tag> --gpu <id> [--spef_write]
-```
-`--spef_write` streams a predicted SPEF via `AutonomousGraphBuilder` + `SPEFWriter`.
+### Features (67-D per net)
 
-**Compare predicted vs golden SPEF**:
-```bash
-python3 src/evaluation/compare_spef.py --golden <path.spef> --pred <path.spef> --out_dir <dir>
-```
+- **41-D base** (`src/baselines/features.py::NetFeatureVector`): wire length,
+  metal area, layer histogram, fanout, aggressor counts, overlap stats, spacing
+  distribution, VSS shielding, dielectric ε, density per metal stack, compact
+  Sakurai-Tamaru-style analytic gnd/cpl estimates.
+- **26-D V4 H3 features** (`archive/pex_v4/scripts/29_extract_new_features.py`,
+  cached in `pex_v4/results/new_features_with_ids.csv`): top-3 aggressor pair
+  geometry (score, overlap, min-xy-dist, mean-dz, agg size, layer-diff flag) +
+  aggressor counts within radii.
 
-There are no tests, lint, or formatter configured. Reports are CSVs written next to outputs; `plot.py` generates a short-vs-long-net scatter from `spef_comparison_report.csv`.
+### Model
 
-## Architecture
+- 10 XGBoost regressors: 5 seeds × {gnd, cpl}. Config: depth=8, n_est=500, lr=0.05,
+  `reg:tweedie` (variance_power=1.5), `subsample=0.8`, `colsample_bytree=0.8`,
+  `early_stopping_rounds=100`. Each weight file ~12 MB JSON.
+- Inference: 5-seed prediction-mean (NOT mean of MAPE). CPU-only.
+- **Trained with L6 σ=0.2 multiplicative noise on `fanout` column** (regularizes
+  to cold-inference fanout proxy distribution, ESSENTIAL — drop costs +0.6 pp).
+- ASAP7 only: **L11 large-net specialist** (depth=8, n_est=500 — matched to
+  canonical hyperparams post-2026-05-18 sprint; was d9 n750, simplified after
+  ablation showed identical or marginal-improve performance with 3× smaller
+  weights). Switch: `total_wire_length_um > 15.35 μm` routes 6-9 % of nets.
+- ~~L5 3-stage isotonic calibration~~ **DROPPED 2026-05-18** (both PDKs;
+  ablation: intel22 −0.10/−0.14 pp IMPROVE; ASAP7 net 0). `calibration.json`
+  archived; `pex_cold.py` guards skip automatically when file absent.
 
-### Data: cuboid tiles
+### SPEF write
 
-`NetTiler` (in `src/preprocessing/tiling.py`) splits each net's routing geometry into fixed-size cuboids using `WINDOW_SIZE = (4.0, 4.0, 20.0)` μm and `TILING_OVERLAP = 0.5` μm. Each tile is saved as a gzipped pickle `<design>/<sample>.pkl.gz`. A global `dataset_manifest.csv` in `PROCESSED_DIR` indexes every tile with columns `sample_filename, net_name, design_name, split, tile_idx, ...`. `split` is assigned at build time: test designs (from `cfg.TEST_DEFS`) get `split=test`; train designs get a random 90/10 `train`/`valid` split per design.
+- `src/utils/spef_writer.py::SPEFWriter` + `AutonomousGraphBuilder` stream SPEF
+  nets one at a time. Round-trip lossless (max abs err 5e-6 fF).
+- IEEE 1481-1999 compatible.
 
-Tensor shape fed to the model is `(N, 9)` per tile. The nine channels are:
+## Key supporting modules
 
-| idx | meaning |
-|-----|---------|
-| 0–2 | `x_rel, y_rel, z_abs` |
-| 3–5 | `w, h, d` (cuboid extents) |
-| 6 | semantic type (1.0 = wire, 0.5 = pin) |
-| 7 | logic flag (1.0 = target net, 0.0 = aggressor) |
-| 8 | permittivity ε (from layer stack) |
+- `src/preprocessing/{def_parser,lef_parser,cell_parser,layer_parser}.py` —
+  streaming parsers for DEF / LEF / `layers.info`. `DefStreamParser` yields
+  `(net_name, cuboids, segments)`.
+- `src/data/tensorizer.py` — `FeatureTensorizer` turns parsed geometry into the
+  per-cuboid (N, 9) tensor (only used when training the archived PINN models).
+- `src/utils/spef_writer.py` — `AutonomousGraphBuilder` + `SPEFWriter`.
+- `src/utils/spef_parser.py` — golden SPEF parser used by `04_compare_golden.py`.
+- `src/baselines/features.py` — `NetFeatureVector` extractor.
 
-Batches are padded to `cfg.NF_PAD_TO_CUBOIDS` cuboids (default 1024) with a `padding_mask`.
+## What lives where
 
-### Model: `DeepPEX_Model` (src/models/neural_field.py)
+| Path | Role |
+|---|---|
+| `TreePEX/` | **Canonical XGBoost frontier + paper benchmark.** |
+| `src/` | Core library (parsers, SPEF writer, feature extractor, materials). |
+| `scripts/` | One-shot CLI scripts (dataset build, probes). |
+| `configs/config.py` | Path constants (DEF / LEF / layer.info / SPEF dir). |
+| `tool/pdk/22nm/` | PDK assets (tech LEF, cell LEF, Liberty, layer.info). |
+| `golden_data/spef_data/intel22/` | StarRC golden SPEFs for 13 designs. |
+| `archive/` | Old paradigm trees (gitignored). pex_v3 PINN, pex_v4 substrate, pex_v5 auto, pex_v7 per-pair, pex_v8 hybrid analytic. All NEG vs TreePEX. |
 
-Two-stage:
-1. **CuboidEncoder** — per-cuboid MLP; input scaling is non-trivial (xy/z divided by `SCALE_FACTOR`, w/h/d `log1p`-normalized, ε `log`-normalized with a clamp to 1.0 to avoid `log(0)` from padding).
-2. **NeuralFluxRouter** (src/models/flux_head.py) — single unified router that replaces attention + physics head + cap head. It runs KCL, 1-hop context aggregation and sparse shielding/coupling (see `compute_sheilding.py`) inside one module.
-
-The router has three trainable heads: `charge_basis_mlp`, `gnd_mlp`, `cpl_mlp`. `freeze_ssl_layers()` freezes the encoder and `flux_router.norm` and leaves those three MLPs trainable — this is the state used throughout active learning. SSL checkpoints sometimes have `_orig_mod.` prefixes from `torch.compile`; loaders strip them and tolerate shape mismatches (e.g. resized `cpl_mlp`) via `strict=False` filtering.
-
-Layer stack info (thickness, z position, ε per metal/dielectric layer) is parsed once by `LayerInfoParser(cfg.LAYERS_INFO_PATH)` into a dict and wrapped in `BEOLMaterialStack` for permittivity lookups; both the dataset builder and the model instantiate it.
-
-### Active learning loop (run_active_learning.py)
-
-The loop is **net-centric**, not tile-centric:
-
-1. `PhysicsSelector.evaluate_pool` scans up to `MAX_POOL_EVAL=5000` tiles and returns per-tile flux entropy.
-2. Entropies are grouped by `(design_name, net_name)` with max reduction, and the top-`NETS_PER_ITER` *nets* are chosen.
-3. **All tiles of each chosen net** are pulled from `pool_df` to reassemble full nets (never leave a net partially labeled — mixing tiles across splits was a past bug, see `prepare_net_centric_validation`).
-4. `FullChipPEXOracle.generate_golden_spef` returns the precomputed StarRC SPEF for the design if present in `cfg.TRAIN_SPEFS`; otherwise it fills in a TCL template (`cfg.PEX_TEMPLATE_PATH`) and runs StarRC. It **never re-runs StarRC on tiles** — always on the full chip DEF.
-5. The net's tiles + golden SPEF are added to `DesignLevelReplayBuffer`; `NetGroupedSampler` (src/data/samplers.py) ensures all tiles of a net stay in the same batch and drops "Mega-Nets" with > `max_tiles_per_batch` tiles to avoid OOM.
-6. `NeuralFieldFinetuner.train_steps` runs `AL_TRAIN_STEPS_PER_ITER` (10000) steps against `val_loader` and saves `best_model.pth` when validation improves.
-7. Loop stops on `AL_MIN_ENTROPY_THRESHOLD` (currently `-inf`, i.e. disabled) or on the net budget cap `AL_MAX_BUDGET_RATIO` × total nets.
-
-The `USE_FAST_ENGINEERING_MODE = True` flag (hard-coded in `main`) builds a predefined train/valid cache once (`cache/predefined_{train,valid}_subset.csv`) and reuses it on subsequent runs — flip to `False` to use the live `prepare_net_centric_validation` path.
-
-`AL_SAMPLING_METHOD` restricts which designs the AL pool draws from:
-- `"Predefined"` — use `cfg.AL_PREDEFINED_DESIGNS` (default).
-- `"SSL"` — auto-pick top-3 highest-entropy designs (skipping any design whose name contains `mpeg` — it's blacklisted for instability).
-- `"Sorted"` — take the alphabetically first 3.
-
-### Key supporting modules
-
-- `src/preprocessing/{def_parser,lef_parser,cell_parser,layer_parser}.py` — streaming parsers for DEF / LEF / `layers.info`. `DefStreamParser` yields `(net_name, cuboids, segments)`.
-- `src/data/tensorizer.py` — `FeatureTensorizer` turns parsed geometry into the (N, 9) tensor.
-- `src/utils/spef_writer.py` — `AutonomousGraphBuilder` + `SPEFWriter` stream SPEF nets one at a time (used by the evaluator's `--spef_write` path).
-- `src/utils/profiler.py` — `RuntimeProfiler` writes `*_macro_runtime.csv` timing breakdowns (`AL_Cycle`, `Eval_SPEF_Gen`, etc.).
-
-### What lives where on disk
-
-- `configs/` — config modules.
-- `scripts/` — one-shot CLI scripts (dataset build, probes).
-- `src/` — library code; nothing in `src/` is a top-level entrypoint except `train_ssl.py`, `evaluator.py`, `compare_spef.py`.
-- `data/processed/intel22_pt/` — repo-local mirror; the live processed data is at `cfg.PROCESSED_DIR = /data/PEX_SSL/data/processed/intel22`.
-- `golden_data/spef_data/intel22/` — golden SPEFs from StarRC. `config.py` currently points `SPEF_DIR` at a sibling project path (`/home/jslee/projects/PEX_SSL/...`), not this repo's copy.
-- `output_intel22/` (created at runtime) — checkpoints under `checkpoints/<RUN_NAME>/`, AL artifacts under `active_learning/<model_name>/`.
+`TreePEX/inputs/` contains pre-extracted V3+V4 feature CSV pointers; live data
+lives at `/data/PINNPEX/data/processed_v3/intel22/features/all_designs.csv`.
 
 ## Conventions worth knowing
 
-- Paths and run tags go through `cfg.RUN_NAME` (SSL basis dir) and `--model_name` (AL / eval output dir); they are independent — keep them consistent when chaining SSL → AL → eval.
-- The codebase assumes a single GPU selected by `cfg.GPU_ID` (default 1) or `--gpu`. There is no DDP/multi-GPU support; `_orig_mod.` prefix stripping exists only because `torch.compile` is enabled in `run_active_learning.py`.
-- Comments and user-facing strings mix English and Korean — this is intentional. Preserve the existing language when editing nearby text.
+- The codebase has no tests, lint, or formatter. Reports are CSVs written next
+  to outputs.
+- Paths in `configs/config.py` are host-specific — verify they exist before
+  blaming code.
+- Comments and user-facing strings mix English and Korean — this is intentional.
+- StarRC uses the SAME inputs we do (DEF + LEF + Liberty + layer.info). The
+  remaining ~1 pp gap from TreePEX to StarRC is representation-bound, not
+  input-bound. **Never claim "GDSII is needed" — it isn't.** (See
+  `TreePEX/REPORT.md` for the correction history.)
+- 4-way oracle blend bound = 4.74 % on tv80s. This is the hand-feature ceiling.
+  Closing it requires new input modality (voxel CNN over rasterized routing)
+  or a fundamentally different paradigm than scalar features + trees.
+
+## Archived (gitignored) — for post-mortem only
+
+Trees under `archive/` represent paradigms that failed to beat TreePEX:
+
+| Tree | Best test MAPE | Why archived |
+|---|---:|---|
+| `archive/pex_v3/` (PINN mesh + curriculum) | 6.26 % tv80s | Beaten by TreePEX ensemble (4.98 %) at 1/20 wall. |
+| `archive/pex_v4/` (substrate physics, auto-4 %) | 5.55 % tv80s | Phase B1 K1 gate failed (Sakurai-Tamaru over-est upper-layer 1.5-2.8×). |
+| `archive/pex_v5/` (auto-4 % sprint) | 5.09 % tv80s | Plateau; TreePEX ensemble passed it. |
+| `archive/pex_v7/` (per-pair regression N5) | 15.7 % tv80s | Cuboid tile resolution 4×4×20 μm too coarse; pair R² ≤ 0.17. |
+| `archive/pex_v8/` (hybrid analytic + residual) | 55.5 % tv80s | analytic_cpl over-estimate exploded the residual loss to cpl 100 % MAPE. |
+
+Memory entries at `~/.claude/projects/-home-jslee-projects-PINNPEX/memory/`
+record the specific failure modes for each track. Read those before proposing
+to revive any archived path.
