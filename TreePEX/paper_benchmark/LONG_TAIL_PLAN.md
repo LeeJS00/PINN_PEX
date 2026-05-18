@@ -33,16 +33,32 @@ Tier A/B는 minimal canonical lock 후 재평가.
 
 `calibration.json` → archive (intel22 + ASAP7 둘 다). ASAP7 specialist d9 n750 → d8 n500 swap. 자세한 결과: `~/.claude/.../memory/project_refinement_sprint_v3_lock.md`.
 
-Cold-inference final numbers (5-seed prediction-mean, mean MAPE):
+Cold-inference final numbers (5-seed prediction-mean), warm/cold 분리:
 
-| PDK | Design | nets | post-sprint MAPE / R² |
-|---|---|---:|---|
-| intel22 | tv80s_f3 | 3,280 | **6.207 / 0.9935** |
-| intel22 | nova_f3 | 113,812 | **6.919 / 0.9895** |
-| ASAP7 | tv80s_x1 | 3,328 | **9.157 / 0.9827** |
-| ASAP7 | nova_x1 | 125,499 | **10.198 / 0.9699** |
+**⚡ Warm path** (cached features, label-leak fanout — pex_tool / 02_inference path):
 
-(intel22 mean MAPE; CLAUDE.md의 4.98/5.28는 median MAPE — 보고 정의 다름.)
+| PDK | Design | nets | MAPE_med / R² | Wall e2e |
+|---|---|---:|---|---:|
+| intel22 | tv80s_f3 | 3,169 | **4.95 % / 0.9936** | 11.27 s |
+| intel22 | nova_f3 | 92,425 | **5.34 % / 0.9914** | 82.10 s |
+| ASAP7 | tv80s_x1 | 3,328 | **6.72 % / 0.9854** | 9.68 s |
+
+**❄️ Cold path** (DEF→features→inference, XGB proxy fanout — pex_cold path):
+
+| PDK | Design | nets | MAPE_med / R² | Wall e2e |
+|---|---|---:|---|---:|
+| intel22 | tv80s_f3 | 3,280 | **4.954 % / 0.9933** | 68.31 s |
+| intel22 | nova_f3 | 113,812 | **5.474 % / 0.9895** | 4767 s (80 m) |
+| ASAP7 | tv80s_x1 | 3,328 | **7.001 % / 0.9827** | ~70 s |
+| ASAP7 | nova_x1 | 125,499 | **7.925 % / 0.9699** | ~3249 s (54 m) |
+
+Warm/cold Δ MAPE (Δ = fanout proxy OOS quality 효과):
+- intel22 tv80s +0.00 pp (proxy near-perfect)
+- intel22 nova  +0.14 pp (fanout proxy 12 % OOS MAPE)
+- ASAP7   tv80s +0.28 pp (fanout proxy 18-20 % OOS MAPE)
+
+**두 path 별도 표 의무** (user directive 2026-05-18): warm path 자체가 label-leak path
+이므로 cold (proxy fanout) 와 절대 같은 column에 섞지 말 것.
 
 ### Acceptance gates (statistician protocol applied)
 - Gate-1: paired Wilcoxon (per-net |error|) + Holm-Bonferroni

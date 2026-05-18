@@ -10,8 +10,34 @@
 ## 1. 한 줄 소개
 
 License-free PEX 도구로, StarRC와 **동일한 입력**(DEF / LEF / Liberty / layer stack)을 받아
-**4.98% MAPE / 7 s (tv80s)** 또는 **5.28% MAPE / 70 s (nova)** 정확도/속도로 SPEF를 생성한다.
-Cadence Innovus (6.96% / 분 단위)와 OpenRCX (8.83% / 분 단위) 대비 정확도 + 속도 모두 우위.
+SPEF를 생성한다. Cadence Innovus (6.96 % / 분 단위)와 OpenRCX (8.83 % / 분 단위) 대비
+정확도 + 속도 모두 우위.
+
+### Numbers (MAPE_med, 5-seed prediction-mean ensemble, post-sprint 2026-05-18)
+
+**⚡ Warm path** (features cached → inference; deployment scenario, label-leak fanout):
+
+| PDK | Design | MAPE | Wall e2e |
+|---|---|---:|---:|
+| intel22 | tv80s_f3 | **4.95 %** | 11.27 s |
+| intel22 | nova_f3 | **5.34 %** | 82.10 s |
+| ASAP7 | tv80s_x1 | **6.72 %** | 9.68 s |
+
+**❄️ Cold path** (DEF→features→inference; StarRC-equivalent fair scenario, proxy fanout):
+
+| PDK | Design | MAPE | Wall e2e |
+|---|---|---:|---:|
+| intel22 | tv80s_f3 | **4.95 %** | 68.31 s |
+| intel22 | nova_f3 | **5.47 %** | 80 min |
+| ASAP7 | tv80s_x1 | **7.00 %** | ~70 s |
+| ASAP7 | nova_x1 | **7.93 %** | ~54 min |
+
+> Warm vs cold 차이: fanout source (gold-SPEF label-leak vs DEF-only XGB proxy) +
+> feature 추출 wall (0 vs 1500-3000 s for nova). **두 path는 절대 같은 표에 섞지 말 것.**
+
+> **2026-05-18 refinement sprint v3 lock**: L5 isotonic calibration **dropped** both PDKs.
+> ASAP7 L11 specialist simplified depth=9 n_est=750 → **depth=8 n_est=500** (3× smaller weights,
+> identical accuracy). See `paper_benchmark/PAPER_TABLES_v2.md` (rev 2).
 
 ---
 

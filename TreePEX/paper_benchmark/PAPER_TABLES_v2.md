@@ -50,22 +50,34 @@ DEF/feature reload between runs; predict-only step unchanged._
 > All numbers cold-from-scratch (DEF→SPEF; no cached features). ASAP7 row uses
 > L9+L11 canonical (2026-05-17).
 
+**⚡ Warm path** (features pre-computed CSV; label-leak fanout; deployment scenario):
+
+| PDK | Design | n_nets | MAPE_tot | MAPE_gnd | MAPE_cpl | R²_tot | Warm wall e2e |
+|---|---|---:|---:|---:|---:|---:|---:|
+| intel22 22 nm  | tv80s_f3 | 3,169   | **4.95 %** | 17.96 % | 13.51 % | **0.9936** | 11.27 s |
+| intel22 22 nm  | nova_f3  | 92,425  | **5.34 %** | 17.42 % | 15.21 % | **0.9914** | 82.10 s |
+| **ASAP7 7 nm** | tv80s_x1 | 3,328   | **6.72 %** | 20.10 % | 9.01 %  | **0.9854** | 9.68 s |
+| **ASAP7 7 nm** | nova_x1  | 125,499 | N/A (no training entry) | — | — | — | — |
+
+**❄️ Cold path** (DEF→parse→V3+V4 H3 features→XGB fanout proxy→inference; StarRC-equivalent fair scenario):
+
 | PDK | Design | n_nets | MAPE_tot | MAPE_gnd | MAPE_cpl | R²_tot | Cold wall | vs StarRC FS |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| intel22 22 nm  | tv80s_f3 | 3,169   | **4.95 %** | 17.96 % | 13.51 % | **0.9936** | 49.75 s         | 5.6× |
-| intel22 22 nm  | nova_f3  | 92,425  | **5.34 %** | 17.42 % | 15.21 % | **0.9914** | 4906 s (82 m)   | 1.46× |
-| **ASAP7 7 nm** | tv80s_x1 | 3,328   | **6.72 %** | 20.10 % | 9.01 %  | **0.9854** | 9.68 s warm     | 3.9× |
-| **ASAP7 7 nm** | nova_x1  | 125,499 | **7.93 %** | 21.32 % | 10.78 % | **0.9699** | 3249 s (54 m)   | 2.2× |
+| intel22 22 nm  | tv80s_f3 | 3,280   | **4.95 %** | 17.57 % | 13.59 % | **0.9933** | 68.31 s        | 4.1× |
+| intel22 22 nm  | nova_f3  | 113,812 | **5.47 %** | 15.83 % | 15.75 % | **0.9895** | 4767 s (80 m)  | 1.50× |
+| **ASAP7 7 nm** | tv80s_x1 | 3,328   | **7.00 %** | 19.91 % | 9.59 %  | **0.9827** | ~70 s         | 3.9× |
+| **ASAP7 7 nm** | nova_x1  | 125,499 | **7.93 %** | 21.32 % | 10.78 % | **0.9699** | ~3249 s (54 m) | 2.2× |
 
-**Takeaway.** Cross-PDK MAPE gap **+2.18 pp mean** (5.15 → 7.33 %) with **zero
+**Takeaway.** Cross-PDK MAPE gap **+2.18 pp mean** (warm 5.15 → 6.72; cold ASAP7 7.00/7.93) with **zero
 hyperparameter retune** on a 22nm → 7nm shift. ASAP7 coupling MAPE (9–11 %) is
 actually **better** than intel22 (13–15 %) — ULK dielectric (ε=3.7) yields
 cleaner coupling signal. Cold-from-scratch beats licensed StarRC field-solver
 by 2.2–5.6×.
 
-_Post-sprint v3 numbers; ASAP7 tv80s warm-path (V3+H3 features cached) drops
-to 6.72 % from cold 7.00 % (−0.29 pp) after L5 drop + specialist d9→d8 swap.
-ASAP7 nova is cold-only (no training entry for nova_x1)._
+_Path separation rule (2026-05-18 user directive): warm vs cold paths differ
+in (1) fanout source — gold-SPEF label-leak vs DEF-only XGB proxy — and
+(2) feature extraction wall — 0 vs 1500-3000 s for nova. **Never report in the
+same table.** See `~/.claude/.../memory/feedback_warm_cold_path_separation.md`._
 
 ---
 

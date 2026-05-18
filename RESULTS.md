@@ -9,14 +9,31 @@ ensemble (depth=8, n_est=500, vp=1.5) → L11 large-net specialist (ASAP7 only,
 d8 n500) → IEEE 1481-1999 SPEF → golden comparison. CPU-only (no GPU needed).
 L5 calibration **dropped** (both PDKs, net 0 ASAP7 / −0.10/−0.14 pp IMPROVE intel22).
 
-### Paper benchmark — END-TO-END wall (parse → predict → SPEF), MAPE_med
+### Paper benchmark — MAPE_med (5-seed prediction-mean ensemble)
 
-| PDK | Design | n_nets | tot_MAPE | gnd_MAPE | cpl_MAPE | R²(tot) | **Wall e2e** | predict-only |
+**⚡ Warm path** (features pre-computed CSV → inference + SPEF; fanout = gold-SPEF-derived label-leak; deployment scenario where feature engineering runs upstream):
+
+| PDK | Design | n_nets | tot_MAPE | gnd_MAPE | cpl_MAPE | R²(tot) | Wall e2e | predict-only |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | **intel22** | tv80s_f3 | 3,169 | **4.95 %** | 17.96 % | 13.51 % | **0.9936** | **11.27 s** | 0.38 s |
 | **intel22** | nova_f3 | 92,425 | **5.34 %** | 17.42 % | 15.21 % | **0.9914** | **82.10 s** | 0.60 s |
-| **ASAP7** | tv80s_x1 | 3,328 | **6.72 %** | 20.10 % | 9.01 % | **0.9854** | **9.68 s warm** | 7.75 s |
-| **ASAP7** | nova_x1 | 125,499 | **7.93 %** | 21.32 % | 10.78 % | **0.9699** | cold 3249 s | (warm n/a) |
+| **ASAP7** | tv80s_x1 | 3,328 | **6.72 %** | 20.10 % | 9.01 % | **0.9854** | **9.68 s** | 7.75 s |
+| **ASAP7** | nova_x1 | 125,499 | N/A (no training entry) | — | — | — | — | — |
+
+**❄️ Cold path** (DEF → parse → V3 + V4 H3 features → fanout XGB proxy → inference; StarRC-equivalent from-scratch playing field):
+
+| PDK | Design | n_nets | tot_MAPE | gnd_MAPE | cpl_MAPE | R²(tot) | Cold wall | vs StarRC FS |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| **intel22** | tv80s_f3 | 3,280 | **4.95 %** | 17.57 % | 13.59 % | **0.9933** | 68.31 s | 4.1× |
+| **intel22** | nova_f3 | 113,812 | **5.47 %** | 15.83 % | 15.75 % | **0.9895** | 4767 s / 80 min | 1.50× |
+| **ASAP7** | tv80s_x1 | 3,328 | **7.00 %** | 19.91 % | 9.59 % | **0.9827** | ~70 s | 3.9× |
+| **ASAP7** | nova_x1 | 125,499 | **7.93 %** | 21.32 % | 10.78 % | **0.9699** | ~3249 s / 54 min | 2.2× |
+
+Warm vs cold Δ MAPE: intel22 tv80s +0.00 pp · intel22 nova +0.14 pp · ASAP7 tv80s +0.28 pp.
+Fanout proxy OOS quality (12 % intel22, 18-20 % ASAP7)가 cold/warm gap 직접 결정.
+
+Warm vs cold 차이: feature 추출 wall (0 vs 1500-3000s) + fanout source (gold-SPEF label-leak vs DEF-only XGB proxy).
+**Path separation rule**: 두 path는 절대 같은 표에 섞지 말 것 (`feedback_warm_cold_path_separation.md`).
 
 Stage breakdown (tv80s / nova):
 - Parse (DEF + tech LEF + cell LEF + layer.info): 1.68 / 65.27 s

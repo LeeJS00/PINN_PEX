@@ -15,12 +15,29 @@ AND wall-clock. Other tracks (PINN mesh v3 / substrate physics v4 / auto-4 % v5
 
 ### Numbers (post refinement sprint v3, 5-seed ensemble, MAPE_med)
 
+**⚡ Warm path** (features pre-computed CSV → inference + SPEF + compare; fanout = gold-SPEF-derived, label-leak; deployment scenario):
+
 | PDK | Design | n_nets | MAPE_tot | R²_tot | Wall (warm e2e) |
 |---|---|---:|---:|---:|---:|
 | intel22 22 nm | tv80s_f3 | 3,169 | **4.95 %** | **0.9936** | 11.27 s |
 | intel22 22 nm | nova_f3 | 92,425 | **5.34 %** | **0.9914** | 82.10 s |
 | ASAP7 7 nm | tv80s_x1 | 3,328 | **6.72 %** | **0.9854** | 9.68 s |
-| ASAP7 7 nm | nova_x1 | 125,499 | **7.93 %** | **0.9699** | (cold) 3249 s |
+| ASAP7 7 nm | nova_x1 | 125,499 | N/A (no training entry) | — | — |
+
+**❄️ Cold path** (DEF → parse → features → fanout XGB proxy → inference; StarRC-equivalent from-scratch):
+
+| PDK | Design | n_nets | MAPE_tot | R²_tot | Cold wall | vs StarRC FS |
+|---|---|---:|---:|---:|---:|---:|
+| intel22 22 nm | tv80s_f3 | 3,280 | **4.95 %** | **0.9933** | 68.31 s | 4.1× |
+| intel22 22 nm | nova_f3 | 113,812 | **5.47 %** | **0.9895** | 4767 s / 80 min | 1.50× |
+| ASAP7 7 nm | tv80s_x1 | 3,328 | **7.00 %** | **0.9827** | ~70 s | 3.9× |
+| ASAP7 7 nm | nova_x1 | 125,499 | **7.93 %** | **0.9699** | ~3249 s / 54 min | 2.2× |
+
+Warm vs cold Δ: intel22 tv80s +0.00 pp (proxy near-perfect), intel22 nova +0.14 pp,
+ASAP7 tv80s +0.28 pp — fanout proxy OOS quality 가 cold/warm gap을 결정.
+
+Warm vs cold: fanout source 차이 (label leak vs proxy) + feature 추출 wall 차이 (0 vs 1500-3000s).
+두 path는 **절대 같은 표에 섞지 말 것** — see `~/.claude/.../memory/feedback_warm_cold_path_separation.md`.
 
 PINN v12 mesh reference (intel22 tv80s/nova): 8.23 % / 7.88 % MAPE at 10.46/91.12 s wall.
 
