@@ -57,6 +57,41 @@ Warm/cold Δ MAPE (Δ = fanout proxy OOS quality 효과):
 - intel22 nova  +0.14 pp (fanout proxy 12 % OOS MAPE)
 - ASAP7   tv80s +0.28 pp (fanout proxy 18-20 % OOS MAPE)
 
+---
+
+## Feature pruning sprint (2026-05-19) — **F3+F4 모두 REJECT**
+
+User pivot 후속: F1 XGB importances + F2 permutation importance로 28 dead features
+식별 → F3a (28-drop) / F3b (41-drop) / F4 (V4 H3 top2+top3 drop) 5-seed retrain.
+
+### Pruning variant 결과 (vs post-sprint 67-D canonical)
+
+| Variant | Schema | ASAP7 tv80s ΔMAPE / R² | ASAP7 nova ΔMAPE / R² | intel22 tv80s | intel22 nova |
+|---|---:|---:|---:|---:|---:|
+| baseline (67-D) | 68-D | 9.157 / 0.9827 | 10.198 / 0.9699 | 6.207 / 0.9935 | 6.919 / 0.9695 |
+| F3a Pruned-39 (28-drop) | 40-D | **+0.51 / −0.016** ⚠ | **+0.22 / −0.004** | +0.13 | **−0.16 improve** |
+| F3b Pruned-26 (41-drop) | 27-D | **+0.55 / −0.017** ⚠ | **+0.38 / −0.005** | +0.14 | **−0.26 improve** |
+| F4 V4-H3-top1-only | 56-D | +0.47 / R² ≈ | **+0.46 / R²≈** ⚠ | +0.17 | +0.29 |
+
+**3-gate verdict**: F3a/F3b/F4 모두 REJECT (ASAP7 양쪽 tv80s ±0.20 / nova ±0.07 tol 위반).
+**67-D canonical이 minimum viable**.
+
+### Lesson
+
+Permutation importance (F2, single-feature shuffle 다른 features fix)는
+모델의 marginal contribution만 측정. **실제 retrain은 새 feature set으로
+interactions 재학습 → permutation prediction과 부호조차 일치 안 함**.
+
+특히:
+- `top2_score` F2 marginal (0.83 pp), F4 retrain ASAP7 nova +0.46 pp
+- 28-dead group drop: capacity bottleneck — 모델이 drop된 features 정보를
+  남은 features로 흡수 못 함
+- intel22 nova는 모든 variant에서 improve (PDK별 feature usage 매우 다름),
+  but cross-PDK consistency가 paper claim일 시 invalid
+
+상세: `~/.claude/.../memory/feedback_permutation_importance_pitfall.md`.
+F3a/F3b/F4 weight 디렉토리 archive 처리 (rebuttal-시 재현용 보존).
+
 **두 path 별도 표 의무** (user directive 2026-05-18): warm path 자체가 label-leak path
 이므로 cold (proxy fanout) 와 절대 같은 column에 섞지 말 것.
 

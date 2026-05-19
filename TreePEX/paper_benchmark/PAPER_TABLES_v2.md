@@ -152,6 +152,24 @@ Analyzer (`scripts/ablation_analyze.py`): 3-gate decision (paired Wilcoxon
 | specialist d9 n750 → d8 n500       | N/A               | N/A               | −0.04 (improve)| −0.04 (improve)  | ✅ **SIMPLIFY** (3× smaller weights) |
 | no V4 H3 26-D (V3-only retrain)    | not measured      | not measured      | +1.36 sig      | +1.83 sig (R² −0.014) | ✅ V4 H3 ESSENTIAL |
 
+### Feature pruning sprint (2026-05-19) — REJECTED variants
+
+F2 permutation importance가 28 dead features 식별했지만 retrain ablation REJECT:
+
+| Variant | Schema | ASAP7 tv80s ΔMAPE | ASAP7 nova ΔMAPE | intel22 tv80s | intel22 nova | Decision |
+|---|---:|---:|---:|---:|---:|---|
+| F3a 28-drop (Pruned-39) | 40-D | +0.51 / R²−0.016 | +0.22 / R²−0.004 | +0.13 | −0.16 | 🛑 REJECT |
+| F3b 41-drop (Pruned-26) | 27-D | +0.55 / R²−0.017 | +0.38 / R²−0.005 | +0.14 | −0.26 | 🛑 REJECT |
+| F4 V4 H3 top1-only (12 drop) | 56-D | +0.47 | +0.46 | +0.17 | +0.29 | 🛑 REJECT |
+
+**67-D canonical lock** — permutation importance ≠ retrain essentiality. Capacity
+bottleneck (모델이 dropped features 정보를 남은 features로 흡수 못 함) +
+top1/2/3 aggressor feature interactions로 인해 individual low-importance 라도
+group drop 시 ASAP7 양쪽 design에서 MAPE +0.22~+0.55 pp 회귀.
+
+intel22 nova는 IMPROVE (−0.16~−0.26 pp) — PDK별 feature usage 차이; cross-PDK
+consistency가 paper claim일 시 invalid.
+
 **Takeaway.** L9 alone (single constant 256 → 768) is **larger than L3+L5+L6
 combined** — a train/inference distribution-mismatch bug. L11 selectively
 raises R²_tot on the long tail (nova 0.937 → 0.970) by routing 8.9 % of nets

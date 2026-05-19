@@ -29,6 +29,9 @@ _ap.add_argument("--out_dir", default=None,
                       "Use for ablation retrains to avoid overwriting canonical weights.")
 _ap.add_argument("--no_h3", action="store_true",
                  help="Drop 26-D V4 H3 features; train V3-only 41-D model.")
+_ap.add_argument("--drop_features", default=None,
+                 help="Path to text file listing one feature name per line to drop. "
+                      "Use for fine-grained feature pruning (F3/F4 sprint).")
 _args = _ap.parse_args()
 _PDK = get_pdk(_args.pdk)
 
@@ -72,6 +75,10 @@ H3_FEATURE_COLS = [
 ]
 FEAT_ORDER = (BASE_FEATURE_COLS if _args.no_h3
               else BASE_FEATURE_COLS + H3_FEATURE_COLS)
+if _args.drop_features:
+    _drop = set(Path(_args.drop_features).read_text().strip().split("\n"))
+    FEAT_ORDER = [f for f in FEAT_ORDER if f not in _drop]
+    print(f">>> --drop_features: dropped {len(_drop)} features, retained {len(FEAT_ORDER)}-D", flush=True)
 
 CONFIG = {"depth": 8, "n_est": 500, "lr": 0.05, "vp": 1.5, "early_stop": 100}
 SEEDS = [42, 0, 1, 2, 3]
